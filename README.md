@@ -4,6 +4,8 @@ BitBlender is a highly configurable, highly scalable Bloom filter accelerator fr
 
 See `BitBlender-Multistream-Architecture.png` for an architecture diagram.
 
+See `BitBlender_FPL2024_presentation.pptx` for the FPL 2024 presentation slides, which summarizes our paper.
+
 ## System Requirements
 
 BitBlender has been tested extensively on an Alveo U280 FPGA, built using [TAPA](https://github.com/UCLA-VAST/tapa), version 0.0.20221113.1.
