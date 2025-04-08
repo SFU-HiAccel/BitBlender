@@ -11,7 +11,7 @@ class IncludesCodeGenerator:
 //    #include <time.h>
 //#endif
 
-#include "MurmurHash3.h"
+#include "BitBlender.h"
 
 #if NAIVE_MULTISTREAM != 0
 void crash_compilation(

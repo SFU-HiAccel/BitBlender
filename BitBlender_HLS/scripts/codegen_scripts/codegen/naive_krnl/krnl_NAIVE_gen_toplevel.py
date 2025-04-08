@@ -37,10 +37,27 @@ class TopLevelCodeGenerator:
 
         for s in range(0, self.config.num_stm):
             codeArr.append('    DECLARE_STREAMS_FOR_PE({s})'.format(s=s) + "\n")
+        codeArr.append('    #if NUM_STM != {s}'.format(s=self.config.num_stm) + "\n")
+        codeArr.append('    crash(compilation)' + "\n")
+        codeArr.append('    #endif' + "\n")
 
         codeArr.append('    tapa::task()' + "\n")
         for s in range(0, self.config.num_stm):
             codeArr.append('        INVOKES_FOR_PE({s})'.format(s=s) + "\n")
+        codeArr.append('        #if NUM_STM != {s}'.format(s=self.config.num_stm) + "\n")
+        codeArr.append('        crash(compilation)' + "\n")
+        codeArr.append('        #endif' + "\n")
+
+        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
+        codeArr.append('        .invoke(write_perfctrs' + "\n")
+        for s in range(0, self.config.num_stm):
+            codeArr.append('                , perfctr_stms{s}'.format(s=s) + "\n")
+        codeArr.append('                #if NUM_STM != {s}'.format(s=self.config.num_stm) + "\n")
+        codeArr.append('                crash(compilation)' + "\n")
+        codeArr.append('                #endif' + "\n")
+        codeArr.append('                , perfctr_mmap' + "\n")
+        codeArr.append('        )' + "\n")
+        codeArr.append('        #endif' + "\n")
         codeArr.append('    ;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    return;' + "\n")

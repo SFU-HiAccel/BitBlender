@@ -9,7 +9,7 @@ class ModuleCodeGenerator:
         codeArr = []
 
         codeArr.append("""
-#include "MurmurHash3.h"
+#include "BitBlender.h"
 
 #if NAIVE_MULTISTREAM != 1
 void crash_compilation(
@@ -100,10 +100,6 @@ void loadBV(
         codeArr.append('    ,crash,' + "\n")
         codeArr.append('    #endif' + "\n")
         codeArr.append("""
-
-    #if ENABLE_PERF_CTRS
-    ,tapa::ostreams<PERFCTR_DTYPE, 1>                   & perfctr_out
-    #endif
 ){
 
     #if BV_LOAD_BITWIDTH > 1024
@@ -114,18 +110,10 @@ void loadBV(
     int section_idx = 0;
     BV_LOAD_DTYPE  cur_bv_val;
 
-    #if ENABLE_PERF_CTRS
-    PERFCTR_DTYPE   load_cycles = 0;
-    #endif
-
     for (int i_req = 0, i_resp = 0;
             i_resp < BV_NUM_LOADS; )
     {
         #pragma HLS PIPELINE II=1
-
-        #if ENABLE_PERF_CTRS
-        load_cycles += 1;
-        #endif
         
         if (i_req < BV_NUM_LOADS && input_bv.read_addr.try_write(i_req)) {
             ++i_req;
@@ -155,20 +143,6 @@ void loadBV(
         codeArr.append('        }' + "\n")
         codeArr.append('    }' + "\n")
         codeArr.append("""
-
-
-    #if ENABLE_PERF_CTRS
-    WRITE_PERF_CTRS:
-    for (int i = 0; i < NUM_PERFCTR_OUTPUTS; ++i) {
-    #pragma HLS PIPELINE II=1
-        if (i == 0){
-            perfctr_out[0].write(load_cycles);
-        }
-        else{
-            perfctr_out[0].write(55555);
-        }
-    }
-    #endif  // ENABLE_PERF_CTRS
 
     #ifdef __DO_DEBUG_PRINTS__
     printf("\\n\\nLOADBV %d - DONE NOW.\\n\\n", strm_idx);
@@ -308,15 +282,25 @@ void DEBUG_compute_sink(
     return;
 }
 
+""")
+        if (self.config.num_partitions != 5):
+            print("(note - naive-multistream still uses partitions, purely for distributing memory usage between bram/uram.)")
+            raise ValueError("ERROR: For naive-multistream, for best results, we need num_partitions = 5.")
+
+        codeArr.append("""
 
 void queryResult_per_hash(
         int strm_idx
         ,int hash_idx
-        ,tapa::istream<HASHONLY_DTYPE>         &  hash_stream_0
-        ,tapa::istream<HASHONLY_DTYPE>         &  hash_stream_1
-        ,tapa::istream<BV_URAM_PACKED_DTYPE>   &  bv_load_stream
-        ,tapa::ostream<BIT_DTYPE>              &  query_bv_stream_0
-        ,tapa::ostream<BIT_DTYPE>              &  query_bv_stream_1
+        ,tapa::istream<HASHONLY_DTYPE>          & hash_stream_0
+        ,tapa::istream<HASHONLY_DTYPE>          & hash_stream_1
+        ,tapa::istream<BV_URAM_PACKED_DTYPE>    & bv_load_stream
+        ,tapa::ostream<BIT_DTYPE>               & query_bv_stream_0
+        ,tapa::ostream<BIT_DTYPE>               & query_bv_stream_1
+
+        #if ENABLE_PERF_CTRS
+        ,tapa::ostream<PERFCTR_DTYPE>           & perfctr_stm
+        #endif
 ){
 
     BV_BRAM_PACKED_DTYPE     bv_buf_BRAMS[BV_NUM_BRAM_PARTITIONS][BV_PARTITION_LENGTH_IN_BRAM_PACKED_ELEMS];
@@ -471,6 +455,15 @@ void queryResult_per_hash(
         query_bv_stream_0.write(cur_bv_kp0);
         query_bv_stream_1.write(cur_bv_kp1);
     }
+
+    #if ENABLE_PERF_CTRS
+    /* NOTE - since we know exactly how many cycles this will take
+     * we just write out the constant rather than explicitly keeping track of
+     * the number of cycles, which would waste some resources.
+     */
+    perfctr_stm.write(  KEYS_PER_STM/2  );
+    #endif  // ENABLE_PERF_CTRS
+
 
     #ifdef __DO_DEBUG_PRINTS__
     printf("QUERY UNIT %d hash %d - DONE NOW\\n", strm_idx, hash_idx);
@@ -634,6 +627,36 @@ void writeOutput_synchronous(
     #endif
 }
 
+""")
+
+        codeArr.append('#if ENABLE_PERF_CTRS' + "\n")
+        codeArr.append('void write_perfctrs(' + "\n")
+        codeArr.append('    tapa::istreams<PERFCTR_DTYPE, NUM_HASH>  & querycycle_in0' + "\n")
+        for s in range(1, self.config.num_stm):
+            codeArr.append('    ,tapa::istreams<PERFCTR_DTYPE, NUM_HASH>  & querycycle_in{s}'.format(s=s) + "\n")
+        codeArr.append('    #if NUM_STM != {s}'.format(s=self.config.num_stm) + "\n")
+        codeArr.append('    crash(compilation)' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    ,tapa::mmap<PERFCTR_DTYPE>                          perfctr_mmap' + "\n")
+        codeArr.append(') {' + "\n")
+        codeArr.append('    int total_i = 0;' + "\n")
+
+        for s in range(0, self.config.num_stm):
+            codeArr.append('    for (int i = 0; i < NUM_HASH; ++i) {' + "\n")
+            codeArr.append('        perfctr_mmap[total_i++] = querycycle_in{s}[i].read();'.format(s=s) + "\n")
+            codeArr.append('    }' + "\n")
+        codeArr.append('    #if NUM_STM != {s}'.format(s=self.config.num_stm) + "\n")
+        codeArr.append('    crash(compilation)' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('}' + "\n")
+        codeArr.append('#endif' + "\n")
+
+        codeArr.append("""
+/********************************************************************/
+
+
+
 
 
 #define DECLARE_STREAMS_FOR_PE(PE)  \\
@@ -651,6 +674,12 @@ void writeOutput_synchronous(
     tapa::stream<BIT_DTYPE, 2>                          aggregate_stream_1_PE##PE;  \\
     \\
     tapa::stream<OUT_PACKED_DTYPE, 2>                   packed_output_stream_PE##PE;    \\
+    tapa::streams<PERFCTR_DTYPE, NUM_HASH, STM_DEPTH>   perfctr_stms##PE;    \\
+
+
+    //#if ENABLE_PERF_CTRS
+    //tapa::streams<PERFCTR_DTYPE, NUM_PERFCTR_MODULES, STM_DEPTH>   perfctr_stms##PE;        \\
+    //#endif
 
 
 
@@ -664,6 +693,7 @@ void writeOutput_synchronous(
                 , bv_load_stream_PE##PE[HASH] \\
                 , query_bv_stream_0_PE##PE[HASH]  \\
                 , query_bv_stream_1_PE##PE[HASH]  \\
+                , perfctr_stms##PE[HASH]  \\
         )   \\
 
 

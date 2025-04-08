@@ -9,10 +9,11 @@ class AggrCodeGenerator:
 
         codeArr.append("""
 void bloom_aggregate_SPLIT(
-        int     agg_idx,
-        int     kp_idx,
-        tapa::istreams<BIT_DTYPE, NUM_HASH>   & reconstruct_stream,
-        tapa::ostream<BIT_DTYPE>   & aggregate_stream
+        int     agg_idx
+        ,int     kp_idx
+        ,tapa::istreams<BIT_DTYPE, NUM_HASH>   & reconstruct_stream
+        ,tapa::ostream<BIT_DTYPE>   & aggregate_stream
+        ,int NUM_LOADS_PER_STM
 ){
     #ifndef __SYNTHESIS__
     //printf("NOTE: Using SPLIT AGGREGATE!!\\n");
@@ -23,7 +24,7 @@ void bloom_aggregate_SPLIT(
     int all_hashes_available = 0;
     uint32_t result = 1;
 
-    while (num_writes_TOTAL < KEYPAIRS_PER_STM)
+    while (num_writes_TOTAL < NUM_LOADS_PER_STM)
     {
     #pragma HLS PIPELINE=1
         // Check if all of our hash values are available:
@@ -75,11 +76,12 @@ void bloom_aggregate_SPLIT(
 
         codeArr.append('#define AGGREGATE_INVOKES_FOR_KP(KP_IDX)    \\' + "\n")
         for s in range(0, self.config.num_stm):
-            codeArr.append('        .invoke(bloom_aggregate_SPLIT,  \\' + "\n")
-            codeArr.append('                    {s},  \\'.format(s=s) + "\n")
-            codeArr.append('                    KP_IDX, \\' + "\n")
-            codeArr.append('                    reconstruct_stream_stm{s}_kp##KP_IDX, \\'.format(s=s) + "\n")
-            codeArr.append('                    aggregate_stream_kp##KP_IDX[{s}]  \\'.format(s=s) + "\n")
+            codeArr.append('        .invoke(bloom_aggregate_SPLIT  \\' + "\n")
+            codeArr.append('                    ,{s}  \\'.format(s=s) + "\n")
+            codeArr.append('                    ,KP_IDX \\' + "\n")
+            codeArr.append('                    ,reconstruct_stream_stm{s}_kp##KP_IDX \\'.format(s=s) + "\n")
+            codeArr.append('                    ,aggregate_stream_kp##KP_IDX[{s}]  \\'.format(s=s) + "\n")
+            codeArr.append('                    ,NUM_LOADS_PER_STM   \\' + "\n")
             codeArr.append('        )   \\' + "\n")
         codeArr.append('' + "\n")
 

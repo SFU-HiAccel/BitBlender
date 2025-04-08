@@ -5,12 +5,15 @@
 There are several subfolders.
 
 `codegen_scripts`:
-- This contains the code-generation scripts, which can be used to generate BitBlender configurations (as in, hardware configurations).
+- This contains the code-generation scripts, which can be used to generate specific BitBlender configurations (i.e., hardware configurations).
 
 `config_selection`:
-- This contains `config_sel.py`, which implements the Auto Design-Space Explorer (AutoDSE). This is used to suggest several BitBlender configurations, given an algorithmic configuration.
+- This contains `config_sel.py`, which implements the Automated Design Explorer (Automation Flow). This is used to suggest several BitBlender configurations, given a Bloom filter's algorithmic specification (i.e. #insertions and false-positive rate).
 
 `PerfModel_Scripts`:
-- This contains `cycles_perfmodel.py`, which estimates the "efficiency" of a given dynamically-scheduled BitBlender configuration.
-  This is NOT meant to be used by an end-user - it is used by the `config_selection` scripts.
+- This is NOT meant to be used by an end-user.
+- This contains `cycles_perfmodel.py`, which estimates the "efficiency" of a given dynamically-scheduled BitBlender configuration. This scripts is used by the `config_selection` scripts.
 
+`KRNL_debug_scripts`:
+- This is NOT meant to be used by an end-user.
+- This contains certain scripts that are used to debug the kernel.

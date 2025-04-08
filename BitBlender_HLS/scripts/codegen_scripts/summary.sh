@@ -29,6 +29,7 @@ categories[SYN]="Kernel compilation failed to complete|SYN|Synthesis Failed|${RE
 categories[SCG]="Unable to create system connectivity graph|SCG|Connectivity Graph Error|${RED}|${RED_B}|${NC}"
 categories[PLC]="Placer failed with error|PLC|Placer Failure|${RED}|${RED_B}|${NC}"
 categories[UTL]="over-utilized in Pblock|UTL|Overutilization|${RED}|${RED_B}|${NC}"
+categories[UTL2]="Resource utilization: Slice LUTs over-utilized in Top Level Design|UTL|Overutilization|${RED}|${RED_B}|${NC}"
 categories[CL7]="Design is not routable as its global congestion level is 7|CL7|Congestion Level 7|${RED}|${RED_B}|${NC}"
 categories[PCN]="Routing results verification failed due to partially-conflicted nets|PCN|Partially Conflicted Nets|${RED}|${RED_B}|${NC}"
 categories[PRN]="Partially routed nets|PRN|Partially Routed Nets|${RED}|${RED_B}|${NC}"
@@ -39,6 +40,8 @@ categories[CAN]="CANCELLED AT|CAN|Job Cancelled|${YELLOW}|${YELLOW_B}|${GREY}"
 categories[MEM]="Some of your processes may have been killed by the cgroup out-of-memory handler|MEM|Out-of-Memory|${YELLOW}|${YELLOW_B}|${GREY}"
 categories[CRS]="Sorry, but it appears that a AMD program has terminated unexpectedly.|CRS|Crashed|${YELLOW}|${YELLOW_B}|${GREY}"
 categories[CRS2]="Sorry, but it appears that a Xilinx program has terminated unexpectedly.|CRS|Crashed|${YELLOW}|${YELLOW_B}|${GREY}"
+categories[CRS3]="Application Exception: HADAFileSet::getSrcOptions() : NULL pointer.|CRS|Crashed|${YELLOW}|${YELLOW_B}|${GREY}"
+categories[ABG]="Nested Partition Pblocks must have a common ancestor Pblock|ABG|AutoBridgeBug|${YELLOW}|${YELLOW_B}|${GREY}"
 categories[UKN]="|UKN|Unknown|${CYAN}|${CYAN_B}|${GREY}"
 
 # Function to get clock scaling info
@@ -72,14 +75,14 @@ for file in *.out; do
             if [[ "$key" == "BLT" ]]; then
                 clock_info=$(get_clock_scaling_info "$file")
             fi
-            echo -e "${params[3]}$file_config |${params[4]} ${params[1]} ${params[3]}|${params[5]} ${params[2]}${NC}$clock_info"
+            echo -e "$file : ${params[3]}$file_config |${params[4]} ${params[1]} ${params[3]}|${params[5]} ${params[2]}${NC}$clock_info"
             matched=true
             break
         fi
     done
     if [ "$matched" = false ]; then
         IFS='|' read -r -a params <<< "${categories[UKN]}"
-        echo -e "${params[3]}$file_config |${params[4]} ${params[1]} ${params[3]}|${params[5]} ${params[2]}${NC}"
+        echo -e "$file : ${params[3]}$file_config |${params[4]} ${params[1]} ${params[3]}|${params[5]} ${params[2]}${NC}"
     fi
 done
 

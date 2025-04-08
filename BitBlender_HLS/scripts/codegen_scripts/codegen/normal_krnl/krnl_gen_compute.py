@@ -70,18 +70,18 @@ uint32_t MurmurHash3_x86_32 (
     
     def generate_computeHash_feeder(self):
         codeArr = []
+
+
         codeArr.append('void computeHash_Feeder(' + "\n")
-        codeArr.append('        int                                 strm_idx,' + "\n")
-        codeArr.append('        int                                 keypair_idx,' + "\n")
-        codeArr.append('        tapa::istream<KEY_DTYPE>            & key_in_stream,' + "\n")
-        codeArr.append('        tapa::ostreams<KEY_DTYPE, NUM_HASH> & key_out_stream' + "\n")
+        codeArr.append('        int                                     strm_idx' + "\n")
+        codeArr.append('        ,int                                    keypair_idx' + "\n")
+        codeArr.append('        ,tapa::istream<KEY_DTYPE>               & key_in_stream' + "\n")
+        codeArr.append('        ,tapa::ostreams<KEY_DTYPE, NUM_HASH>    & key_out_stream' + "\n")
+        codeArr.append('        ,int                                    NUM_LOADS_PER_STM' + "\n")
         codeArr.append('){' + "\n")
-        codeArr.append('    const int READ_STOP_COUNT =     KEYPAIRS_PER_STM;' + "\n")
-        codeArr.append('    const int WRITE_STOP_COUNT =    KEYPAIRS_PER_STM*NUM_HASH;' + "\n")
+
         codeArr.append('    int total_num_reads = 0;' + "\n")
-        codeArr.append('    int total_num_writes = 0;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    int input_idx = 0;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    KEY_DTYPE       key;' + "\n")
         codeArr.append('    bool            key_written[NUM_HASH];' + "\n")
@@ -92,12 +92,12 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('        key_written[i] = 1;' + "\n")
         codeArr.append('    }' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    while (total_num_reads < READ_STOP_COUNT ||' + "\n")
-        codeArr.append('            total_num_writes < WRITE_STOP_COUNT' + "\n")
-        codeArr.append('    ) {' + "\n")
+
+        codeArr.append('    while (1) {' + "\n")
         codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('        bool do_read = 1;' + "\n")
+        codeArr.append('        // Only read if there is data to read, AND we already wrote the previous data.' + "\n")
+        codeArr.append('        bool do_read = !key_in_stream.empty();' + "\n")
         codeArr.append('        HASH_RD_LOOP:' + "\n")
         codeArr.append('        for(int hash_idx = 0; hash_idx < NUM_HASH; ++hash_idx){' + "\n")
         codeArr.append('            if (key_written[hash_idx] == 0) {' + "\n")
@@ -105,9 +105,7 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('        if (do_read &&' + "\n")
-        codeArr.append('            input_idx < KEYPAIRS_PER_STM' + "\n")
-        codeArr.append('        ){' + "\n")
+        codeArr.append('        if (do_read) {' + "\n")
         codeArr.append('            ///////////////////////////////////' + "\n")
         codeArr.append('            // READ LOGIC:' + "\n")
         codeArr.append('' + "\n")
@@ -117,16 +115,18 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('            #ifdef __DO_DEBUG_PRINTS__' + "\n")
         codeArr.append('            printf("COMPUTEHASH_FEEDER #%d kp%d - Read input #%d, with value %d.\\n",' + "\n")
         codeArr.append('                strm_idx, keypair_idx,' + "\n")
-        codeArr.append('                input_idx, key.to_int()' + "\n")
+        codeArr.append('                total_num_reads, key.to_int()' + "\n")
         codeArr.append('            );' + "\n")
+        codeArr.append('            total_num_reads++;' + "\n")
         codeArr.append('            #endif' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('            total_num_reads++;' + "\n")
-        codeArr.append('            input_idx++;' + "\n")
         codeArr.append('            for (int j = 0; j < NUM_HASH; ++j) {' + "\n")
         codeArr.append('                key_written[j] = 0;' + "\n")
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+
+        codeArr.append('' + "\n")
         codeArr.append('        ///////////////////////////////////' + "\n")
         codeArr.append('        // WRITE LOGIC:' + "\n")
         codeArr.append('' + "\n")
@@ -134,7 +134,6 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('        #pragma HLS UNROLL' + "\n")
         codeArr.append('            if (key_written[hash_idx] == 0) {' + "\n")
         codeArr.append('                if (key_out_stream[hash_idx].try_write(key)) {' + "\n")
-        codeArr.append('                    total_num_writes++;' + "\n")
         codeArr.append('                    key_written[hash_idx] = 1;' + "\n")
         codeArr.append('                }' + "\n")
         codeArr.append('            }' + "\n")
@@ -159,43 +158,55 @@ uint32_t MurmurHash3_x86_32 (
 
     def generate_computeHash_computer(self):
         codeArr = []
-        codeArr.append('void computeHash_Computer(' + "\n")
-        codeArr.append('        int                             stm_idx,' + "\n")
-        codeArr.append('        int                             hash_idx,' + "\n")
-        codeArr.append('        int                             keypair_idx,' + "\n")
-        codeArr.append('        tapa::istream<KEY_DTYPE>        & key_stream,' + "\n")
-        codeArr.append('        tapa::ostream<HASHONLY_DTYPE>   & hash_stream' + "\n")
-        codeArr.append('){' + "\n")
-        codeArr.append('    int module_idx = stm_idx*NUM_HASH + hash_idx;' + "\n")
-        codeArr.append('    const int WRITE_STOP_COUNT =    KEYPAIRS_PER_STM;' + "\n")
-        codeArr.append('    int total_num_writes = 0;' + "\n")
-        codeArr.append('    int input_idx = 0;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    MAIN_LOOP:' + "\n")
-        codeArr.append('    while ( total_num_writes < WRITE_STOP_COUNT){' + "\n")
-        codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
-        codeArr.append('        KEY_DTYPE key = key_stream.read();' + "\n")
-        codeArr.append('        uint32_t hash = MurmurHash3_x86_32(key, hash_idx);' + "\n")
-        codeArr.append('        hash %= BV_SECTION_LENGTH;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        hash_stream.write(hash);' + "\n")
-        codeArr.append('        total_num_writes++;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        #ifdef __DO_DEBUG_PRINTS__' + "\n")
-        codeArr.append('        printf("COMPUTEHASH_COMPUTER #%d kp%d - (STM %d, HASH %d): read input #%d, key %d, computed hash = %d\\n",' + "\n")
-        codeArr.append('                module_idx,' + "\n")
-        codeArr.append('                keypair_idx,' + "\n")
-        codeArr.append('                stm_idx,' + "\n")
-        codeArr.append('                hash_idx,' + "\n")
-        codeArr.append('                input_idx,' + "\n")
-        codeArr.append('                key.to_int(),' + "\n")
-        codeArr.append('                hash' + "\n")
-        codeArr.append('        );' + "\n")
-        codeArr.append('        input_idx++;' + "\n")
-        codeArr.append('        #endif' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    }' + "\n")
-        codeArr.append('}' + "\n")
+        codeArr.append(
+"""void computeHash_Computer(
+        int                             stm_idx
+        ,int                            hash_idx
+        ,int                            keypair_idx
+        ,tapa::istream<KEY_DTYPE>       & key_stream
+        ,tapa::ostream<COMP2ARB_DTYPE>  & comp2arb_stream
+        ,int                            NUM_LOADS_PER_STM
+){
+    const int WRITE_STOP_COUNT =    NUM_LOADS_PER_STM;
+    int total_num_writes = 0;
+    COMP2ARB_DTYPE  wr;
+
+    #ifdef __DO_THIS_DEBUG_PRINTS__
+    int input_idx = 0;
+    int module_idx = stm_idx*NUM_HASH + hash_idx;
+    #endif
+
+    MAIN_LOOP:
+    while ( total_num_writes < WRITE_STOP_COUNT){
+    #pragma HLS PIPELINE II=1
+        KEY_DTYPE key = key_stream.read();
+        uint32_t hash = MurmurHash3_x86_32(key, hash_idx);
+
+        hash %= BV_SECTION_LENGTH;
+
+        //comp2arb_stream.write(hash);
+        wr.partition_idx = (hash / BV_PARTITION_LENGTH);
+        wr.lookup_idx = (hash % BV_PARTITION_LENGTH);
+        comp2arb_stream.write(wr);
+
+        total_num_writes++;
+
+        #ifdef __DO_DEBUG_PRINTS__
+        printf("COMPUTEHASH_COMPUTER #%d kp%d - (STM %d, HASH %d): read input #%d, key %d, computed hash = %d\\n",
+                module_idx,
+                keypair_idx,
+                stm_idx,
+                hash_idx,
+                input_idx,
+                key.to_int(),
+                hash
+        );
+        input_idx++;
+        #endif
+
+    }
+}
+""")
         codeArr.append('' + "\n")
         return codeArr
 
@@ -216,12 +227,13 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('' + "\n")
 
         codeArr.append('#define INVOKE_COMPUTERS_FOR_HASH(HASH_IDX, STM_IDX, KP_IDX)\\' + "\n")
-        codeArr.append('    .invoke(computeHash_Computer,\\' + "\n")
-        codeArr.append('            STM_IDX,\\' + "\n")
-        codeArr.append('            HASH_IDX,\\' + "\n")
-        codeArr.append('            KP_IDX,\\' + "\n")
-        codeArr.append('            key_tmp_stream_##STM_IDX##_kp##KP_IDX[HASH_IDX],\\' + "\n")
-        codeArr.append('            hash_stream_h##HASH_IDX##_kp##KP_IDX[STM_IDX]\\' + "\n")
+        codeArr.append('    .invoke(computeHash_Computer\\' + "\n")
+        codeArr.append('            ,STM_IDX\\' + "\n")
+        codeArr.append('            ,HASH_IDX\\' + "\n")
+        codeArr.append('            ,KP_IDX\\' + "\n")
+        codeArr.append('            ,key_tmp_stream_##STM_IDX##_kp##KP_IDX[HASH_IDX]\\' + "\n")
+        codeArr.append('            ,comp2arb_stream_h##HASH_IDX##_kp##KP_IDX[STM_IDX]\\' + "\n")
+        codeArr.append('            ,NUM_LOADS_PER_STM\\' + "\n")
         codeArr.append('    )' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('' + "\n")
@@ -238,11 +250,12 @@ uint32_t MurmurHash3_x86_32 (
         codeArr.append('#define COMPUTEHASH_INVOKES_FOR_KP(KP_IDX)  \\' + "\n")
 
         for s in range(0, self.config.num_stm):
-            codeArr.append('        .invoke(computeHash_Feeder, \\' + "\n")
-            codeArr.append('                    {s},  \\'.format(s=s) + "\n")
-            codeArr.append('                    KP_IDX,    \\' + "\n")
-            codeArr.append('                    key_stream_kp##KP_IDX[{s}],   \\'.format(s=s) + "\n")
-            codeArr.append('                    key_tmp_stream_{s}_kp##KP_IDX    \\'.format(s=s) + "\n")
+            codeArr.append('        .invoke<tapa::detach>(computeHash_Feeder \\' + "\n")
+            codeArr.append('                    ,{s}  \\'.format(s=s) + "\n")
+            codeArr.append('                    ,KP_IDX    \\' + "\n")
+            codeArr.append('                    ,key_stream_kp##KP_IDX[{s}]   \\'.format(s=s) + "\n")
+            codeArr.append('                    ,key_tmp_stream_{s}_kp##KP_IDX    \\'.format(s=s) + "\n")
+            codeArr.append('                    ,NUM_LOADS_PER_STM  \\' + "\n")
             codeArr.append('        )   \\' + "\n")
         codeArr.append('    /* Need NUM_STM of these^ invokes */ \\' + "\n")
 

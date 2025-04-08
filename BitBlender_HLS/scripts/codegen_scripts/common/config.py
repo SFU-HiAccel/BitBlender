@@ -1,3 +1,4 @@
+import math
 
 
 class Config:
@@ -13,8 +14,9 @@ class Config:
                     ,_arbiter_type
                     ,_shuffle_type
                     ,_enable_arbiter_sink
-                    ,_vivado_year
+                    ,_vivado_version
                     ,_fpga_name
+                    ,_target_freq_mhz
     ):
         self.design_type            = _design_type
 
@@ -34,32 +36,54 @@ class Config:
         self.enable_arbiter_sink    = _enable_arbiter_sink
 
 
-        self.vivado_year            = _vivado_year
+        self.vivado_version         = _vivado_version       ### Of the format "2021.2".
         self.fpga_name              = _fpga_name
+        self.target_freq_mhz        = _target_freq_mhz
+
+        self.enable_perfctrs        = 0
 
         ########################
-        #### COMPUTED PARAMETERS
+        #### NON-INPUT PARAMETERS
         ########################
-        self.enable_perfctrs        = 0
+        self.enable_perf_ctrs       = 1
+
         self.num_arb_atoms          = self.num_stm - 1
+
+        self.target_clkT_ns         = round(1000*(1/self.target_freq_mhz), 2)   ## Rounded to 2 decimal places
+
+        self.vivado_year            = int(self.vivado_version.split(".")[0])
 
         ### The pack factor means the number of streams in each AXI port. Cap out at 512 bits per AXI.
         ### We need this because the AXI bitwidths must be in the set {32, 64, 128, 256, 512, 1024}.
-        self.keys_axi_port_pack_factor       = 2**((self.num_stm-1).bit_length())
-        if (self.keys_axi_port_pack_factor > 8):
-            ### Currently each stream is (2*32) = (num_bram_ports * key_bitwidth).
-            self.keys_axi_port_pack_factor   = 8
+        self.KEYS_MAX_AXI_PACK_FACTOR = 8
+        self.keys_num_axi_ports = math.ceil( self.num_stm / self.KEYS_MAX_AXI_PACK_FACTOR )
 
-        if (self.num_stm > 8):
-            raise ValueError("Need to add support for NUM_STM>8 in the input-port datapacking.")
+        ### Mod, but from [1, MAX] instead of [0, MAX-1].
+        self.keys_num_remainder_stm = self.num_stm % self.KEYS_MAX_AXI_PACK_FACTOR
+        if (self.keys_num_remainder_stm == 0):
+            self.keys_num_remainder_stm = self.KEYS_MAX_AXI_PACK_FACTOR
 
-        if (self.vivado_year >= 2022) and (self.fpga_name == "U50"):
-            self.device_name = "xilinx_u50_gen3x16_xdma_5_202210_1"
-        elif (self.vivado_year >= 2022) and (self.fpga_name == "U280"):
-            self.device_name = "xilinx_u280_gen3x16_xdma_1_202211_1"
-        elif (self.vivado_year < 2022) and (self.fpga_name == "U280"):
-            self.device_name = "xilinx_u280_xdma_201920_3"
-        else:
+        if (self.keys_num_remainder_stm < 0):
+            raise ValueError("LOGIC ERROR")
+
+        if (self.vivado_year != 2021 and self.vivado_year != 2022):
+            raise ValueError("The requested vivado-year is not tested.")
+
+
+        #### Set the device name:
+        self.device_name = None
+        if (self.fpga_name == "U50"):
+            if (self.vivado_year >= 2022):
+                self.device_name = "xilinx_u50_gen3x16_xdma_5_202210_1"
+
+        elif (self.fpga_name == "U280"):
+            if (self.vivado_year >= 2022):
+                self.device_name = "xilinx_u280_gen3x16_xdma_1_202211_1"
+            else:
+                self.device_name = "xilinx_u280_xdma_201920_3"
+
+        if (self.device_name is None):
             raise ValueError("(FPGA name, vivado year) combination not currently supported.")
 
+        print("DEVICE name is set to: {}".format(self.device_name))
  

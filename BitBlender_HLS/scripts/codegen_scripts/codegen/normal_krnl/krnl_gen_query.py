@@ -17,11 +17,33 @@ void queryResult_per_hash(
         ,tapa::istreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>               & bv_lookup_stream_kp1
         ,tapa::ostreams<BV_PLUS_METADATA_PACKED_DTYPE, BV_NUM_PARTITIONS>   & query_bv_packed_stream_kp0
         ,tapa::ostreams<BV_PLUS_METADATA_PACKED_DTYPE, BV_NUM_PARTITIONS>   & query_bv_packed_stream_kp1
+
+        #if ENABLE_PERF_CTRS
+        ,tapa::ostream<PERFCTR_DTYPE>       & cyclectr_out
+        #endif
+
+        ,int NUM_LOADS_PER_STM
 ) {
-    const int MAX_NUM_WRITES = NUM_STM*KEYS_PER_STM;
-    int num_writes = 0;
-    int num_reads = 0;
- 
+    // Each stream loads N keyPAIRS. Query consumes on a KEY-by-KEY basis.
+
+    const int MAX_NUM_READS = NUM_STM * (NUM_LOADS_PER_STM*2);
+    //int num_writes = 0;
+
+    bool finished_computing = 0;
+    bool finished_reading = 0;
+    int finish_read_check_pidx = 0;
+    int finish_write_check_BRAM_pidx = 0;
+    int finish_write_check_URAM_pidx = 0;
+    int total_num_reads = 0;
+
+    int num_reads_per_partition[BV_NUM_PARTITIONS];
+    #pragma HLS ARRAY_PARTITION variable=num_reads_per_partition dim=0 complete
+
+    #if ENABLE_PERF_CTRS
+    bool cyclecount_enable = 0;
+    PERFCTR_DTYPE cyclectr = 0;
+    #endif
+
     /* This is pretty confusing. We LOAD in chunks of size URAM_PACKED_BITWIDTH
      *  but we need to put it into the BRAMS.
      *  So the BRAMs will take 64 bits, which gives it 2 packed-value.
@@ -54,6 +76,13 @@ void queryResult_per_hash(
     #ifndef __SYNTHESIS__
     printf("INFO: We are using the SPLIT QUERY unit!\\n");
     #endif
+
+
+    INIT_NUM_READS:
+    for (int i = 0; i < BV_NUM_PARTITIONS; ++i) {
+        num_reads_per_partition[i] = 0;
+    }
+
 
     INIT_BRAM_QUERIED_VALS_BUF:
     for (int j = 0; j < BV_NUM_BRAM_PARTITIONS; ++j) {
@@ -140,8 +169,74 @@ void queryResult_per_hash(
 
 
     PROCESS_QUERIES:
-    while (num_writes < MAX_NUM_WRITES){
+    while (finished_computing == 0){
     #pragma HLS PIPELINE II=1
+        /////////////////////
+        // FINISH COMPUTATION LOGIC
+        /////////////////////
+        FINISH_COMPUTATION_LOGIC:
+        if (finished_reading == 0) {
+            /* This implementation slowly adds all the values up
+             * so we dont have too big of a logic-chain.
+             */
+            if (finish_read_check_pidx == BV_NUM_PARTITIONS) {
+                finish_read_check_pidx = 0;
+                total_num_reads = 0;
+            } else {
+                total_num_reads += num_reads_per_partition[finish_read_check_pidx];
+                finish_read_check_pidx++;
+            }
+        }
+        else {
+            // After we know were finished reading, we need to make sure were finished writing.
+            if (finish_write_check_BRAM_pidx < BV_NUM_BRAM_PARTITIONS &&
+                bram_queried_vals_buf[finish_write_check_BRAM_pidx][0].valid == 0 &&
+                bram_queried_vals_buf[finish_write_check_BRAM_pidx][1].valid == 0
+            ) {
+                // Both keys in the pair have finished writing.
+                finish_write_check_BRAM_pidx++;
+            }
+            if (finish_write_check_URAM_pidx < BV_NUM_URAM_PARTITIONS &&
+                uram_queried_vals_buf[finish_write_check_URAM_pidx][0].valid == 0 &&
+                uram_queried_vals_buf[finish_write_check_URAM_pidx][1].valid == 0
+            ) {
+                finish_write_check_URAM_pidx++;
+            }
+        }
+
+        if (total_num_reads == MAX_NUM_READS) {
+            #ifdef __DO_DEBUG_PRINTS__
+            if (finished_reading == 0) {
+                printf("QUERY UNIT %d kp0 and kp1 - h/p/s=(%d,all,all). Finished reading.\\n",
+                        hash_idx,
+                        hash_idx
+                );
+            }
+            #endif
+            finished_reading = 1;
+        }
+        if (finish_write_check_BRAM_pidx == BV_NUM_BRAM_PARTITIONS &&
+            finish_write_check_URAM_pidx == BV_NUM_URAM_PARTITIONS
+        ) {
+            #ifdef __DO_DEBUG_PRINTS__
+            printf("QUERY UNIT %d kp0 and kp1 - h/p/s=(%d,all,all). Finished writing.\\n",
+                    hash_idx,
+                    hash_idx
+            );
+            #endif
+            finished_computing = 1;
+        }
+
+        /////////////////////
+        // END OF FINISH COMPUTATION LOGIC
+        /////////////////////
+
+
+        #if ENABLE_PERF_CTRS
+        if (cyclecount_enable) {
+            cyclectr += 1;
+        }
+        #endif
 
         BV_BRAM_PARTITION_LOOP:
         for (int bram_partition_idx = 0; bram_partition_idx < BV_NUM_BRAM_PARTITIONS; ++bram_partition_idx) {
@@ -156,14 +251,19 @@ void queryResult_per_hash(
             {
                 PACKED_HASH_DTYPE   packed_hash;
                 METADATA_DTYPE      cur_metadata;
-                HASHONLY_DTYPE      bv_lookup_idx;
+                LOOKUPIDX_DTYPE      bv_lookup_idx;
                 BIT_DTYPE           cur_bv_val;
                 BV_PLUS_METADATA_PACKED_DTYPE     data_to_write;
 
-                HASHONLY_DTYPE      bv_outer_idx;
-                HASHONLY_DTYPE      bv_inner_idx;
+                LOOKUPIDX_DTYPE      bv_outer_idx;
+                LOOKUPIDX_DTYPE      bv_inner_idx;
+
+                #if ENABLE_PERF_CTRS
+                cyclecount_enable = 1;
+                #endif
 
                 packed_hash = bv_lookup_stream_kp0[bram_partition_idx].read();
+                num_reads_per_partition[bram_partition_idx]++;
 
                 // Unpack the values
                 cur_metadata = packed_hash.md;
@@ -201,14 +301,20 @@ void queryResult_per_hash(
             {
                 PACKED_HASH_DTYPE   packed_hash;
                 METADATA_DTYPE      cur_metadata;
-                HASHONLY_DTYPE      bv_lookup_idx;
+                LOOKUPIDX_DTYPE      bv_lookup_idx;
                 BIT_DTYPE           cur_bv_val;
                 BV_PLUS_METADATA_PACKED_DTYPE     data_to_write;
 
-                HASHONLY_DTYPE      bv_outer_idx;
-                HASHONLY_DTYPE      bv_inner_idx;
+                LOOKUPIDX_DTYPE      bv_outer_idx;
+                LOOKUPIDX_DTYPE      bv_inner_idx;
+
+                #if ENABLE_PERF_CTRS
+                cyclecount_enable = 1;
+                #endif
 
                 packed_hash = bv_lookup_stream_kp1[bram_partition_idx].read();
+
+                num_reads_per_partition[bram_partition_idx]++;
 
                 // Unpack the values
                 cur_metadata = packed_hash.md;
@@ -248,7 +354,6 @@ void queryResult_per_hash(
                     bram_queried_vals_buf[bram_partition_idx][0].data
                 )
             ) {
-                ++num_writes;
                 bram_queried_vals_buf[bram_partition_idx][0].valid = 0;
             }
 
@@ -258,7 +363,6 @@ void queryResult_per_hash(
                     bram_queried_vals_buf[bram_partition_idx][1].data
                 )
             ) {
-                ++num_writes;
                 bram_queried_vals_buf[bram_partition_idx][1].valid = 0;
             }
         }
@@ -305,14 +409,19 @@ void queryResult_per_hash(
             {
                 PACKED_HASH_DTYPE   packed_hash;
                 METADATA_DTYPE      cur_metadata;
-                HASHONLY_DTYPE      bv_lookup_idx;
+                LOOKUPIDX_DTYPE      bv_lookup_idx;
                 BIT_DTYPE           cur_bv_val;
                 BV_PLUS_METADATA_PACKED_DTYPE     data_to_write;
 
-                HASHONLY_DTYPE      bv_outer_idx;
-                HASHONLY_DTYPE      bv_inner_idx;
+                LOOKUPIDX_DTYPE      bv_outer_idx;
+                LOOKUPIDX_DTYPE      bv_inner_idx;
+
+                #if ENABLE_PERF_CTRS
+                cyclecount_enable = 1;
+                #endif
 
                 packed_hash = bv_lookup_stream_kp0[uram_partition_idx + BV_NUM_BRAM_PARTITIONS].read();
+                num_reads_per_partition[uram_partition_idx + BV_NUM_BRAM_PARTITIONS]++;
 
                 // Unpack the values
                 cur_metadata = packed_hash.md;
@@ -350,14 +459,19 @@ void queryResult_per_hash(
             {
                 PACKED_HASH_DTYPE   packed_hash;
                 METADATA_DTYPE      cur_metadata;
-                HASHONLY_DTYPE      bv_lookup_idx;
+                LOOKUPIDX_DTYPE      bv_lookup_idx;
                 BIT_DTYPE           cur_bv_val;
                 BV_PLUS_METADATA_PACKED_DTYPE     data_to_write;
 
-                HASHONLY_DTYPE      bv_outer_idx;
-                HASHONLY_DTYPE      bv_inner_idx;
+                LOOKUPIDX_DTYPE      bv_outer_idx;
+                LOOKUPIDX_DTYPE      bv_inner_idx;
+
+                #if ENABLE_PERF_CTRS
+                cyclecount_enable = 1;
+                #endif
 
                 packed_hash = bv_lookup_stream_kp1[uram_partition_idx + BV_NUM_BRAM_PARTITIONS].read();
+                num_reads_per_partition[uram_partition_idx + BV_NUM_BRAM_PARTITIONS]++;
 
                 // Unpack the values
                 cur_metadata = packed_hash.md;
@@ -397,7 +511,6 @@ void queryResult_per_hash(
                     uram_queried_vals_buf[uram_partition_idx][0].data
                 )
             ) {
-                ++num_writes;
                 uram_queried_vals_buf[uram_partition_idx][0].valid = 0;
             }
 
@@ -407,12 +520,15 @@ void queryResult_per_hash(
                     uram_queried_vals_buf[uram_partition_idx][1].data
                 )
             ) {
-                ++num_writes;
                 uram_queried_vals_buf[uram_partition_idx][1].valid = 0;
             }
         }
 
     }
+
+    #if ENABLE_PERF_CTRS
+    cyclectr_out.write(cyclectr);
+    #endif
 
     #ifdef __DO_DEBUG_PRINTS__
     printf("\\n\\nQUERY UNIT %d - DONE NOW.\\n\\n",
@@ -440,7 +556,7 @@ void queryResult_per_hash(
 
     def generate_query_wrapper(self):
         codeArr = []
-        
+
         codeArr.append('#define QUERY_INVOKES   \\' + "\n")
 
         for i in range(0, self.config.num_hash):
@@ -452,7 +568,19 @@ void queryResult_per_hash(
             codeArr.append('                , bv_lookup_stream_h{}_kp1\\'.format(i) + "\n")
             codeArr.append('                , query_bv_packed_stream_hash{}_kp0\\'.format(i) + "\n")
             codeArr.append('                , query_bv_packed_stream_hash{}_kp1\\'.format(i) + "\n")
+
+            if (self.config.enable_perf_ctrs):
+                codeArr.append('                \\' + "\n")
+                codeArr.append('                , perfctr_stms[{}]\\'.format(i) + "\n")
+
+            codeArr.append('                , NUM_LOADS_PER_STM \\' + "\n")
             codeArr.append('        )\\' + "\n")
+
+        codeArr.append('' + "\n")
+        codeArr.append('#if NUM_HASH != {}'.format(self.config.num_hash) + "\n")
+        codeArr.append('crash compilation()' + "\n")
+        codeArr.append('#endif' + "\n")
+        codeArr.append('' + "\n")
 
         return codeArr
 
@@ -472,6 +600,7 @@ void queryResult_per_hash(
 
     def generate(self):
         codeArr = []
+        codeArr.append("\n\n/*************************************************************************************/\n\n")
         codeArr.extend(self.generate_query_per_hash())
         codeArr.extend(self.generate_query_wrapper())
         codeArr.append("\n\n/*************************************************************************************/\n\n")

@@ -8,40 +8,36 @@ class MakeFileGenerator:
     def generate(self):
         codeArr = []
         codeArr.append("""
+### Required by the included Makefiles:
+HOST_ARCH := x86
+SYSROOT :=
 
 .PHONY: help
 
 help::
 	$(ECHO) "Makefile Usage:"
-	$(ECHO) "  make all TARGET=<sw_emu/hw_emu/hw> DEVICE=<FPGA platform> HOST_ARCH=<aarch32/aarch64/x86> SYSROOT=<sysroot_path>"
+	$(ECHO) "  make all TARGET=<sw_emu/hw_emu/hw> AURORA=<enabled/disabled>"
 	$(ECHO) "	  Command to generate the design for specified Target and Shell."
-	$(ECHO) "	  By default, HOST_ARCH=x86. HOST_ARCH and SYSROOT is required for SoC shells"
 	$(ECHO) ""
-	$(ECHO) "  make clean "
+	$(ECHO) "  make clean"
 	$(ECHO) "	  Command to remove the generated non-hardware files."
 	$(ECHO) ""
 	$(ECHO) "  make cleanall"
-	$(ECHO) "	  Command to remove all the generated files."
+	$(ECHO) "	  Command to remove all the generated files, including hardware files."
 	$(ECHO) ""
-	$(ECHO)  "  make test DEVICE=<FPGA platform>"
-	$(ECHO)  "	 Command to run the application. This is same as 'check' target but does not have any makefile dependency."
-	$(ECHO)  ""
-	$(ECHO) "  make sd_card TARGET=<sw_emu/hw_emu/hw> DEVICE=<FPGA platform> HOST_ARCH=<aarch32/aarch64/x86> SYSROOT=<sysroot_path>"
-	$(ECHO) "	  Command to prepare sd_card files."
-	$(ECHO) "	  By default, HOST_ARCH=x86. HOST_ARCH and SYSROOT is required for SoC shells"
+	$(ECHO) "  make check TARGET=<sw_emu/hw_emu/hw> AURORA=<enabled/disabled>"
+	$(ECHO) "	  Command to build and run application."
 	$(ECHO) ""
-	$(ECHO) "  make check TARGET=<sw_emu/hw_emu/hw> DEVICE=<FPGA platform> HOST_ARCH=<aarch32/aarch64/x86> SYSROOT=<sysroot_path>"
-	$(ECHO) "	  Command to run application in emulation."
-	$(ECHO) "	  By default, HOST_ARCH=x86. HOST_ARCH and SYSROOT is required for SoC shells"
+	$(ECHO) "  make exe TARGET=<sw_emu/hw_emu/hw> AURORA=<enabled/disabled>"
+	$(ECHO) "	  Command to build the host executable for BitBlender."
 	$(ECHO) ""
-	$(ECHO) "  make build TARGET=<sw_emu/hw_emu/hw> DEVICE=<FPGA platform> HOST_ARCH=<aarch32/aarch64/x86> SYSROOT=<sysroot_path>"
-	$(ECHO) "	  Command to build xclbin application."
-	$(ECHO) "	  By default, HOST_ARCH=x86. HOST_ARCH and SYSROOT is required for SoC shells"
+	$(ECHO) "  make build TARGET=<sw_emu/hw_emu/hw> AURORA=<enabled/disabled>"
+	$(ECHO) "	  Command to build xclbin."
 	$(ECHO) ""
 
 # Points to top directory of Git repository
-COMMON_REPO = /localhdd/kenny/BloomFilter/Bloomfilter/
-#COMMON_REPO = /scratch/hpc-prf-haqc/kenny/BloomFilter/Bloomfilter/
+COMMON_REPO = /localhdd/kenny/BloomFilter/BitBlender/krnl_includes
+#COMMON_REPO = /scratch/hpc-prf-haqc/kenny/BloomFilter/BitBlender/krnl_includes
 PWD = $(shell readlink -f .)
 ABS_COMMON_REPO = $(shell readlink -f $(COMMON_REPO))
 
@@ -49,21 +45,23 @@ ABS_COMMON_REPO = $(shell readlink -f $(COMMON_REPO))
 """)
 
 
-        if (self.config.design_type == DesignType.NAIVE_MULTISTREAM):
-            codeArr.append('#VERSION := new_multistream' + "\n")
-            codeArr.append('VERSION := naive_multistream' + "\n")
-        elif (self.config.design_type == DesignType.NORMAL_MULTISTREAM):
-            codeArr.append('VERSION := new_multistream' + "\n")
+        if (self.config.design_type == DesignType.NORMAL_MULTISTREAM):
+            codeArr.append('VERSION := bitblender' + "\n")
             codeArr.append('#VERSION := naive_multistream' + "\n")
-
+        elif (self.config.design_type == DesignType.NAIVE_MULTISTREAM):
+            codeArr.append('#VERSION := bitblender' + "\n")
+            codeArr.append('VERSION := naive_multistream' + "\n")
+        else:
+            codeArr.append('ERROR. Invalid designtype')
+            quit(-1)
 
         codeArr.append("""
 ifeq ($(VERSION), singlestream)
-	APP = singlestream_MurmurHash3
-else ifeq ($(VERSION), new_multistream)
-	APP = multistream_MurmurHash3
+	APP = singlestream_Bloomfilter
+else ifeq ($(VERSION), bitblender)
+	APP = multistream_BitBlender
 else ifeq ($(VERSION), naive_multistream)
-	APP = naive_multistream_MurmurHash3
+	APP = naive_multistream_Bloomfilter
 endif
 KERNEL = workload
 #DEVICE := xilinx_u200_xdma_201830_2
@@ -72,13 +70,15 @@ KERNEL = workload
 #DEVICE := xilinx_u50_gen3x16_xdma_5_202210_1
 """)
 
-        codeArr.append("DEVICE := {}".format(self.config.device_name))
-
+        codeArr.append('DEVICE := {}'.format(self.config.device_name) + "\n")
 
         codeArr.append("""
 TARGET := hw
-HOST_ARCH := x86
-SYSROOT :=
+AURORA := unspecified
+
+ifeq ($(AURORA),$(filter $(AURORA),unspecified))
+$(error Must specify AURORA variable)
+endif
 
 #Include Libraries
 include $(ABS_COMMON_REPO)/utils.mk
@@ -87,58 +87,86 @@ include $(ABS_COMMON_REPO)/common/includes/xcl2/xcl2.mk
 
 XSA := $(call device2xsa, $(DEVICE))
 TEMP_DIR := ./_x.$(TARGET)_$(APP).$(XSA)
-BUILD_DIR := ./build_dir.$(TARGET).$(XSA)
+
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+BUILD_DIR := ./aurora_build_dir.$(TARGET).$(XSA)
+else
+BUILD_DIR := ./tapa_build_dir.$(TARGET).$(XSA)
+endif
 
 ###VPP := v++ --profile_kernel=data:all:all:all
 VPP := v++
 
+AUTOBRG_FLOORPLAN_FILE = build_script/bitblender_floorplan.tcl
 
 LDFLAGS += $(xcl2_LDFLAGS)
 HOST_SRCS += $(xcl2_SRCS)
 
-ifeq ($(VERSION), new_multistream)
+ifeq ($(VERSION), bitblender)
 	DEFINE_FLAGS = -DNAIVE_MULTISTREAM=0
 else ifeq ($(VERSION), naive_multistream)
 	DEFINE_FLAGS = -DNAIVE_MULTISTREAM=1
 endif
 
 ifeq ($(TARGET),$(filter $(TARGET),hw))
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
 	TAPAC_FLAGS=	--enable-synth-util \\
 					--run-floorplanning \\
-					--constraint build_script/knn_floorplan.tcl \\
-					--enable-hbm-binding-adjustment \\
+					--constraint $(AUTOBRG_FLOORPLAN_FILE) \\
+					--enable-hbm-binding-adjustment
+else    # AURORA
+	TAPAC_FLAGS=	--enable-synth-util \\
+					--run-floorplanning \\
+					--constraint $(AUTOBRG_FLOORPLAN_FILE) \\
+					--enable-hbm-binding-adjustment
 
-else
+endif   # AURORA
+else    # TARGET
 	TAPAC_FLAGS=
-endif
+endif   # TARGET
 
 
-CXXFLAGS += $(opencl_CXXFLAGS) $(DEFINE_FLAGS) -Wall -O0 -g -std=c++17
+
+CXXFLAGS += $(opencl_CXXFLAGS) $(DEFINE_FLAGS) -Wall -Wno-unused-label -Wno-unknown-pragmas -O0 -g -std=c++17
 ### ADDING THIS because v2021.2 moved it's include files.... stupid.
 CXXFLAGS += -I$(XILINX_HLS)/include
 CXXFLAGS += -fmessage-length=0
 
 LDFLAGS += $(opencl_LDFLAGS)
 LDFLAGS += -lrt -lstdc++
-LDFLAGS += -ltapa -lfrt -lglog -lgflags
+LDFLAGS += -ltapa -lfrt -lglog -lgflags -lxrt_coreutil
 
-HOST_SRCS += src/host.cpp
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+HOST_SRCS += src/host_QSFP_aurora.cpp #src/hostside_krnlhelpers.cpp
+else
+HOST_SRCS += src/host_HBM.cpp #src/hostside_krnlhelpers.cpp
+endif
 BLOOMFILTER_SRCS += src/$(APP).cpp
 
 
 ifeq ($(TARGET),$(filter $(TARGET),sw_emu))
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+	echo "Cannot run SW_EMU with aurora enabled."
+	exit 1
+else
 	CHECK_DEPENDENCY=$(EXECUTABLE)
+endif
 else
 	CHECK_DEPENDENCY=all
 endif
 
-CONFIGFILE = src/MurmurHash3.h
-INIFILE = src/MurmurHash3.ini
-LDCLFLAGS += --config $(INIFILE) 
-
 # Adding config files to linker
-EXECUTABLE = host
-CMD_ARGS = $(BUILD_DIR)/$(APP).xclbin
+CONFIGFILE = src/BitBlender.h
+INIFILE = src/BitBlender.ini
+LDCLFLAGS += --config $(INIFILE)
+
+
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+	EXECUTABLE = host_QSFP_aurora
+else
+	EXECUTABLE = host_HBM
+endif
+
 EMCONFIG_DIR = $(TEMP_DIR)
 
 KRNL_XCLBIN += $(BUILD_DIR)/$(APP).xclbin
@@ -156,33 +184,35 @@ exe: $(EXECUTABLE)
 build: $(KRNL_XCLBIN)
 
 
+.PHONY: MODIFY_CFGS
+MODIFY_CFGS: $(CONFIGFILE)
 ifeq ($(TARGET),$(filter $(TARGET),hw))
-.PHONY: MODIFY_CONFIGFILE
-MODIFY_CONFIGFILE: $(CONFIGFILE)
 """)
 
-        codeArr.append("	sed -i 's/^#define NUM_DESIRED_INPUT_KEYS.*/#define NUM_DESIRED_INPUT_KEYS (1024*1024*{}*NUM_STM)/' $(CONFIGFILE)".format(self.config.Miqueries_per_stm)  + "\n")
-        codeArr.append("	sed -i 's/^#define BV_DESIRED_LENGTH.*/#define BV_DESIRED_LENGTH ((1024*1024*{})*NUM_HASH)/' $(CONFIGFILE)".format(self.config.Mibv_len_per_hash) + "\n")
-        codeArr.append("	sed -i 's/^#define NUM_POPULATION_INPUTS.*/#define NUM_POPULATION_INPUTS ((1024*{})*NUM_STM)/' $(CONFIGFILE)".format(self.config.Kiinserts_per_stm) + "\n")
+        codeArr.append("	sed -i 's/^#define NUM_DESIRED_INPUT_KEYS.*/#define NUM_DESIRED_INPUT_KEYS (1024*1024*{}*NUM_STM)   \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Miqueries_per_stm)  + "\n")
+        codeArr.append("	sed -i 's/^#define BV_DESIRED_LENGTH.*/#define BV_DESIRED_LENGTH ((1024*1024*{})*NUM_HASH)          \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Mibv_len_per_hash) + "\n")
+        codeArr.append("	sed -i 's/^#define NUM_POPULATION_INPUTS.*/#define NUM_POPULATION_INPUTS ((1024*{})*NUM_STM)        \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Kiinserts_per_stm) + "\n")
 
+        codeArr.append("" + "\n")
+        codeArr.append("else	### SW or HW EMULATION" + "\n")
+        codeArr.append("	sed -i 's/^#define NUM_DESIRED_INPUT_KEYS.*/#define NUM_DESIRED_INPUT_KEYS (256*{}*NUM_STM)         \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Miqueries_per_stm)  + "\n")
+        codeArr.append("	sed -i 's/^#define BV_DESIRED_LENGTH.*/#define BV_DESIRED_LENGTH ((128*{})*NUM_HASH)                \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Mibv_len_per_hash) + "\n")
+        codeArr.append("	sed -i 's/^#define NUM_POPULATION_INPUTS.*/#define NUM_POPULATION_INPUTS ((2*{})*NUM_STM)           \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)".format(self.config.Kiinserts_per_stm) + "\n")
         codeArr.append("""
-else    ### SW or HW EMULATION
-.PHONY: MODIFY_CONFIGFILE
-MODIFY_CONFIGFILE: $(CONFIGFILE)
-""")
-        codeArr.append("	sed -i 's/^#define NUM_DESIRED_INPUT_KEYS.*/#define NUM_DESIRED_INPUT_KEYS (256*{}*NUM_STM)/' $(CONFIGFILE)".format(self.config.Miqueries_per_stm)  + "\n")
-        codeArr.append("	sed -i 's/^#define BV_DESIRED_LENGTH.*/#define BV_DESIRED_LENGTH ((128*{})*NUM_HASH)/' $(CONFIGFILE)".format(self.config.Mibv_len_per_hash) + "\n")
-        codeArr.append("	sed -i 's/^#define NUM_POPULATION_INPUTS.*/#define NUM_POPULATION_INPUTS ((2*{})*NUM_STM)/' $(CONFIGFILE)".format(self.config.Kiinserts_per_stm) + "\n")
-        codeArr.append("	###sed -i 's/^#define NUM_DESIRED_INPUT_KEYS.*/#define NUM_DESIRED_INPUT_KEYS (1024*1*NUM_STM)/' $(CONFIGFILE)" + "\n")
-        codeArr.append("	###sed -i 's/^#define BV_DESIRED_LENGTH.*/#define BV_DESIRED_LENGTH (512*(NUM_HASH))/' $(CONFIGFILE)" + "\n")
-        codeArr.append("	###sed -i 's/^#define NUM_POPULATION_INPUTS.*/#define NUM_POPULATION_INPUTS (64*1*NUM_STM)/' $(CONFIGFILE)" + "\n")
+endif	### SW or HW EMULATION
 
-        codeArr.append("""
-endif
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+	sed -i 's/^#*\(.*sp=workload.key_in_0.*\)/#\\1/' $(INIFILE)
+	sed -i 's/^#define _KENNY_USING_AURORA_.*/#define _KENNY_USING_AURORA_ (1)    \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)
+else	# AURORA
+	sed -i 's/^#*\(.*sp=workload.key_in_0.*\)/\\1/' $(INIFILE)
+	sed -i 's/^#define _KENNY_USING_AURORA_.*/#define _KENNY_USING_AURORA_ (0)    \/\/ DO NOT MODIFY: Makefile automatically changes this line./' $(CONFIGFILE)
+endif	# AURORA
+
 
 
 # Building kernel
-$(KRNL_XO_FILE): $(BLOOMFILTER_SRCS) MODIFY_CONFIGFILE $(INIFILE)
+$(KRNL_XO_FILE): $(BLOOMFILTER_SRCS) MODIFY_CFGS $(INIFILE)
 	mkdir -p $(TEMP_DIR)
 	mkdir -p build_script
 	tapac \\
@@ -197,11 +227,11 @@ $(KRNL_XO_FILE): $(BLOOMFILTER_SRCS) MODIFY_CONFIGFILE $(INIFILE)
         else:
             raise ValueError("FPGA not supported.")
 
-        codeArr.append("          --part-num {} \\".format(partNum))
+        codeArr.append("		--part-num {} \\".format(partNum) + "\n")
+        codeArr.append("		--platform $(DEVICE) \\" + "\n")
+        codeArr.append("		--clock-period {} \\".format(self.config.target_clkT_ns))
         codeArr.append(
 """
-		--platform $(DEVICE) \\
-		--clock-period 4.44 \\
 		-o $(TEMP_DIR)/$(APP).xo \\
 		--max-parallel-synth-jobs 18 \\
 		--run-tapacc \\
@@ -215,30 +245,46 @@ $(KRNL_XO_FILE): $(BLOOMFILTER_SRCS) MODIFY_CONFIGFILE $(INIFILE)
 		--write-only-args out.* \\
 		$(TAPAC_FLAGS) \\
 		src/$(APP).cpp
-
-
-ifeq ($(TARGET),$(filter $(TARGET),hw))
-$(KRNL_XCLBIN): $(KRNL_XO_FILE)
 """)
 
         ## The floorplanning script needs to have "level0_i" instead of pfm_top_i for newer vivado versions
-        if (self.config.vivado_year >= 2022):
-            codeArr.append("	sed -i 's/pfm_top_i\/dynamic_region/level0_i\/ulp/' build_script/knn_floorplan.tcl")
+        if (self.config.vivado_year >= 2023 or
+            self.config.vivado_version == "2022.2"
+        ):
+            codeArr.append("	sed -i 's/pfm_top_i\/dynamic_region/level0_i\/ulp/' $(AUTOBRG_FLOORPLAN_FILE)")
 
         codeArr.append(
 """
+
+
+ifeq ($(TARGET),$(filter $(TARGET),hw))
+
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+$(KRNL_XCLBIN): $(KRNL_XO_FILE) aurora_xclbin
+else	# AURORA
+$(KRNL_XCLBIN): $(KRNL_XO_FILE)
 	chmod +x $(TEMP_DIR)/$(APP)_generate_bitstream.sh
 	$(TEMP_DIR)/$(APP)_generate_bitstream.sh
-else
+	### rapidstream rapidstream_run.py
+endif	# AURORA
+
+else	# TARGET
+
+ifeq ($(AURORA),$(filter $(AURORA),enabled))
+$(KRNL_XCLBIN):
+	$(error hw_emu is not tested with the Aurora cores.)
+else	# AURORA
 $(KRNL_XCLBIN): $(KRNL_XO_FILE)
 	chmod +x $(TEMP_DIR)/$(APP)_generate_bitstream.sh
 	sed -i 's/TARGET=hw\>/#TARGET=hw/ ; s/^# TARGET=hw_emu/TARGET=hw_emu/ ; s/^# DEBUG=-g/DEBUG=-g/' $(TEMP_DIR)/$(APP)_generate_bitstream.sh
 	$(TEMP_DIR)/$(APP)_generate_bitstream.sh
-endif
+endif	# AURORA
+
+endif	# TARGET
 
 # Building Host
-$(EXECUTABLE): check-xrt $(HOST_SRCS) MODIFY_CONFIGFILE $(BLOOMFILTER_SRCS) $(HOST_HDRS)
-	$(CXX) $(CXXFLAGS) $(HOST_SRCS) $(BLOOMFILTER_SRCS) $(HOST_HDRS) -o '$@' $(LDFLAGS)
+$(EXECUTABLE): check-xrt $(HOST_SRCS) MODIFY_CFGS $(BLOOMFILTER_SRCS)
+	$(CXX) $(CXXFLAGS) $(HOST_SRCS) $(BLOOMFILTER_SRCS) -o '$@' $(LDFLAGS)
 
 emconfig:$(EMCONFIG_DIR)/emconfig.json
 $(EMCONFIG_DIR)/emconfig.json:
@@ -246,7 +292,44 @@ $(EMCONFIG_DIR)/emconfig.json:
 
 
 
-hostbinary: $(EXECUTABLE)
+
+AURORA_DIR=AURORA_STUFF
+AURORA_LINKFLAGS= --link \\
+					--optimize 3 \\
+					--save-temps \\
+					--platform $(DEVICE) \\
+
+$(AURORA_DIR):
+	cp -R $(COMMON_REPO)/../scripts/codegen_scripts/AURORA_XO_FILES/ .
+	mv AURORA_XO_FILES $(AURORA_DIR)
+
+### NOTE: $(KRNL_XO_FILE) IS NOT in this list because our MODIFY_CFGS logic will automatically rebuild it always.
+BB_VPP_STRATEGY="Explore"
+BB_VPP_PLACESTRATEGY="EarlyBlockPlacement"
+aurora_xclbin: $(AURORA_DIR) $(AURORA_DIR)/aurora_hls_0.xo $(AURORA_DIR)/aurora_hls_1.xo $(AURORA_DIR)/aurora_hls_test_hw.cfg $(AURORA_DIR)/issue_hw.xo $(AURORA_DIR)/dump_hw.xo
+	mkdir -p K_tmp_v++_dir
+	cd K_tmp_v++_dir && \\
+		v++ $(AURORA_LINKFLAGS) \\
+			--report_level 2 \\
+			--target $(TARGET) \\
+			--temp_dir _x_aurora_hls_$(TARGET) \\
+			--config ../$(AURORA_DIR)/aurora_hls_test_hw.cfg \\
+			--output ../$(KRNL_XCLBIN) \\
+			--vivado.prop=run.impl_1.STEPS.PHYS_OPT_DESIGN.IS_ENABLED=1 \\
+			--vivado.prop=run.impl_1.STEPS.OPT_DESIGN.ARGS.DIRECTIVE=$(BB_VPP_STRATEGY) \\
+			--vivado.prop=run.impl_1.STEPS.PLACE_DESIGN.ARGS.DIRECTIVE=$(BB_VPP_PLACESTRATEGY) \\
+			--vivado.prop=run.impl_1.STEPS.PHYS_OPT_DESIGN.ARGS.DIRECTIVE=$(BB_VPP_STRATEGY) \\
+			--vivado.prop=run.impl_1.STEPS.ROUTE_DESIGN.ARGS.DIRECTIVE=$(BB_VPP_STRATEGY) \\
+			--vivado.prop=run.impl_1.STEPS.OPT_DESIGN.TCL.PRE=../$(AUTOBRG_FLOORPLAN_FILE) \\
+			../$(AURORA_DIR)/aurora_hls_0.xo \\
+			../$(AURORA_DIR)/aurora_hls_1.xo \\
+			../$(AURORA_DIR)/issue_hw.xo \\
+			../$(AURORA_DIR)/dump_hw.xo \\
+			../$(TEMP_DIR)/multistream_BitBlender.xo \\
+			--kernel_frequency 225  \\
+		&& cd ..
+
+
 
 
 
@@ -258,7 +341,13 @@ else ifeq ($(TARGET),$(filter $(TARGET),hw_emu))
 	echo "log_wave -r *\\nrun all\\nexit" > dump_waveforms.tcl
 	./$(EXECUTABLE) --bitstream=vitis_run_hw_emu/workload_$(DEVICE).xclbin
 else
+
+ifeq ($(AURORA),$(filter $(AURORA),disabled))
 	./$(EXECUTABLE) --bitstream=vitis_run_hw/workload_$(DEVICE).xclbin
+else
+	./$(EXECUTABLE)
+endif
+
 endif
 
 
@@ -268,15 +357,15 @@ endif
 clean:
 	-$(RMDIR) $(EXECUTABLE) $(XCLBIN)/{*sw_emu*,*hw_emu*}
 	-$(RMDIR) profile_* TempConfig system_estimate.xtxt *.rpt *.csv
-	-$(RMDIR) src/*.ll *v++* .Xil emconfig.json dltmp* xmltmp* *.log *.jou *.wcfg *.wdb
+	-$(RMDIR) src/*.ll *v++* .Xil emconfig.json dltmp* xmltmp* *.log *.jou
 	-$(RMDIR) .run
 	-$(RMDIR) $(TEMP_DIR)
 
 cleanall: clean
-	-$(RMDIR) build_dir* sd_card* *.proj
-	-$(RMDIR) _x.* *xclbin.run_summary qemu-memory-_* emulation/ _vimage/ pl* start_simulation.sh *.xclbin
-
+	-$(RMDIR) aurora_build_dir* tapa_build_dir* *.proj
+	-$(RMDIR) _x* *xclbin.run_summary *.xclbin *.xclbin.* *.ltx *.link_summary
+	-$(RMDIR) vitis_run_* .ipcache/ K_tmp_v++*
 """
         )
-        codeArr.append("\n\n")
+
         return codeArr

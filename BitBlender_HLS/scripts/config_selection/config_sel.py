@@ -21,7 +21,7 @@ import cycles_perfmodel as bb_perfmodel
 
 MAX_NUM_HASHES = 25
 OUTPUT_CSV = "CONFIGS.csv"
-qor_models_dir = "./qor_models/"
+qor_models_dir = "./qor_models/models/"
 
 
 """
@@ -39,18 +39,29 @@ def ReadArguments():
     parser = ArgumentParser()
     parser.add_argument("-s", "--sweep", dest="sweep",
                         help="If we should generate a sweep over several (n, fp).",
-                        required=True,
+                        required=False,
                         default="1"
     )
     parser.add_argument("-n", "--num_inserts", dest="n",
                         help="the number of items expected to be inserted to the bloom filter. You can use K as shorthand for thousand, and M as shorthand for million.",
-                        required=False,
-                        default="-1"
+                        required=True,
     )
     parser.add_argument("-f", "--fp_rate", dest="fp",
                         help="the desired false-positive rate of the bloom filter. You can use % if you wish to enter it in percentages.",
-                        required=False,
-                        default="-1"
+                        required=True,
+    )
+
+    parser.add_argument("-a", "--enable_aurora", dest="enable_aurora"
+                        ,help="Whether or not to use the Aurora core, to utilize QSFP connections."
+                        ,required=True
+    )
+    parser.add_argument("-dt", "--design_type", dest="design_type"
+                        ,help="The design type: either 'bitblender', or 'naive' (for naive-multistream). For singlestream, please use naive-multistream with 1 stream."
+                        ,required=True
+    )
+    parser.add_argument("-vv", "--vivado_version", dest="vivado_version"
+                        ,help="Which version of the Vivado/Vitis toolchain are you using? Must be specified in the format of '2021.2'."
+                        ,required=True
     )
     args = parser.parse_args()
 
@@ -71,15 +82,29 @@ def ReadArguments():
             fp = float( args.fp.split("%")[0] ) / 100.0
         else:
             fp = float(args.fp)
+
     except Error:
         raise ValueError("The specified false-positive rate must be a float, and num_inserts must be an int.")
+
+
+    try:
+        design_type     = args.design_type.lower()
+        vivado_version  = args.vivado_version
+        enable_aurora   = int(args.enable_aurora)
+
+    except Error:
+        error_msg = "The specified design type must be one of 'bitblender' or 'naive'."
+        error_msg += " And enable_aurora must be 0 or 1."
+        raise ValueError(error_msg)
+
+
 
     if (sweep == 0) and (fp >= 1 or fp <= 0):
         raise ValueError("The specified false-positive rate is not legal.")
     if (sweep == 0) and (n <= 0):
         raise ValueError("The specified num-inserts is not legal.")
 
-    return (sweep, n, fp)
+    return (sweep, n, fp, design_type, vivado_version, enable_aurora)
 
 
 
@@ -87,10 +112,14 @@ def ReadArguments():
 Given #INSERTS, FP-RATE, and #HASH, we compute the corresponding BVLength.
 """
 def compute_optimal_bvlen(n, fp, h):
-    kth_root_of_eps = fp**(1/h)
-    denom = math.log(1 - kth_root_of_eps)
+    try:
+        kth_root_of_eps = fp**(1/h)
+        denom = math.log(1 - kth_root_of_eps)
+        retval = math.ceil( (-h*n)/denom )
+    except ZeroDivisionError:
+        retval = 99999999999
 
-    return math.ceil( (-h*n)/denom )
+    return retval
 
 
 
@@ -140,12 +169,19 @@ class TSBConfig:
         self.thruput_est = -1
 
     def __repr__(self):
-        ret = "T={:<3}, S={:<3}, B={:<3}, freq={:<7}, cpi={:<8}, thruput={:<10}".format(
-                    self.t, self.s, self.b,
-                    self.freq_estimate,
-                    self.cpi,
-                    self.thruput_est
-        )
+        ret = "T={:<3}, ".format(self.t)
+        ret += "S={:<3}, ".format(self.s)
+        ret += "B={:<3}, ".format(self.b)
+        if (self.freq_estimate is not None):
+            ret += "freq={:<7}, ".format(self.freq_estimate)
+        else:
+            ret += "freq=-1, "
+        if (self.cpi is not None):
+            ret += "cpi={:<8}, ".format(self.cpi)
+        else:
+            ret += "cpi=-1, "
+        ret += "thruput_est={:<10}".format(self.thruput_est)
+
         return ret
 
     def def_freq(self, freq_estimate):
@@ -169,7 +205,7 @@ class TSBConfig:
 
 
 class BloomFilterDesignGenerator:
-    def __init__(self, n, fp):
+    def __init__(self, n, fp, fpga_resources_dict, design_type, vivado_version, enable_aurora):
         self.n = n
         self.fp = fp
         self.PROPOSALS_TO_KEEP_AFTER_PRUNING = 5
@@ -186,6 +222,13 @@ class BloomFilterDesignGenerator:
 
         # pruned_proposals: A list, containing proposals after pruning.
         self.pruned_proposals = []
+
+        self.target_fpga_resources_dict = fpga_resources_dict
+
+        self.design_type = design_type
+        self.vivado_version = vivado_version
+        self.enable_aurora = enable_aurora
+
 
 
     def print_all_proposals(self):
@@ -219,7 +262,19 @@ class BloomFilterDesignGenerator:
         _lines_to_write = []
         fname = "../codegen_scripts/designs_to_generate.sh"
 
+        if (self.enable_aurora):
+            enable_aurora_string = "enabled"
+            host_exe_name = "host_QSFP_aurora"
+        else:
+            enable_aurora_string = "disabled"
+            host_exe_name = "host_HBM"
+
         _lines_to_write.append('#!/bin/bash' + "\n")
+        _lines_to_write.append('' + "\n")
+        _lines_to_write.append('AURORA_ENABLED_STRING={}'.format(enable_aurora_string) + "\n")
+        _lines_to_write.append('HOST_EXE_NAME={}'.format(host_exe_name) + "\n")
+        _lines_to_write.append('VIVADO_VERSION={}'.format(self.vivado_version) + "\n")
+        _lines_to_write.append('CODEGEN_DESIGN_TYPE={}'.format(self.design_type) + "\n")
         _lines_to_write.append('' + "\n")
         _lines_to_write.append('HTSB_CONFIGS=(' + "\n")
 
@@ -232,7 +287,7 @@ class BloomFilterDesignGenerator:
                                                     ,b=tsb.b
                                                     ,l = cfg[1]
             )
-            _lines_to_write.append('    "{}"'.format(HTSBL_string) + "\n")
+            _lines_to_write.append('    "{}_n0"'.format(HTSBL_string) + "\n")
 
         _lines_to_write.append(')' + "\n")
 
@@ -278,10 +333,7 @@ class BloomFilterDesignGenerator:
             self.Harr.append(numhash_arr[i])
             self.Larr.append(bvlen_arr[i])
 
-            section_len = int(bvlen_arr[i] / numhash_arr[i])
-            ## Round up to a power of 2: https://stackoverflow.com/questions/14267555/find-the-smallest-power-of-2-greater-than-or-equal-to-n-in-python
-            section_len = 1<<(section_len-1).bit_length()
-
+            section_len = int( math.ceil( bvlen_arr[i] / numhash_arr[i] ) )
             self.seclen_arr.append(section_len)
 
 
@@ -295,13 +347,18 @@ class BloomFilterDesignGenerator:
     def gen_all_proposals(self):
         num_HL = len(self.Harr)
 
+        with open(qor_models_dir + "/resource_estimation_model_logicresources.pkl", 'rb') as modelfile:
+            logic_resources_estimator = pickle.load(modelfile)
+        with open(qor_models_dir + "/resource_estimation_model_memoryresources.pkl", 'rb') as modelfile:
+            memory_resources_estimator = pickle.load(modelfile)
         with open(qor_models_dir + "/bitstream_model.pkl", 'rb') as modelfile:
             bitstream_completion_model = pickle.load(modelfile)
         with open(qor_models_dir + "/frequency_model.pkl", 'rb') as modelfile:
             frequency_model = pickle.load(modelfile)
 
-        possible_T = [2,4,8]
-        possible_S = range(2,8)
+        possible_T = range(2,12)
+        ### With the QSFP port enabled, we can't have more than 8 streams.
+        possible_S = range(2,9) if self.enable_aurora else range(2,10)
         possible_B = [8, 16]
 
         possible_TSBs = list( cartesian_product(possible_T, possible_S, possible_B) )
@@ -324,22 +381,53 @@ class BloomFilterDesignGenerator:
                 if (tsb.t > tsb.s+3):
                     continue
 
-                feature_names = ["NUM HASH","NUM PART","NUM STM","SHUFBUF_SZ","BVLEN PER HASH"]
+                feature_names = ["H","T","S","B","L","H*T*S","H*L"]
 
                 ### This must be 2D - the first idx is a row (but we only have 1 row, so it looks dumb).
                 htsbl = [[]]
                 htsbl[0] = [h]
                 htsbl[0].extend( [tsb.t, tsb.s, tsb.b] )
                 htsbl[0].append(seclen_M)
+                htsbl[0].extend( [h*tsb.t*tsb.s, h*seclen_M] )
 
-                labelled_data = pd.DataFrame(htsbl, columns=feature_names)
+                labelled_htsbl  = pd.DataFrame(htsbl, columns=feature_names)
 
-                tmp = bitstream_completion_model.predict( labelled_data )
-                bitstream_will_generate = 1 if (tmp[0] > 0.5) else 0
+                predicted_logic_resources = logic_resources_estimator.predict( labelled_htsbl )
+                predicted_mem_resources = memory_resources_estimator.predict( labelled_htsbl )
+                ## Experimentally-determined cost for using the Aurora IP.
+                ##  The multiplication is to ease routing difficulties.
+                extra_kLUT      = 13*14 if self.enable_aurora else 0
+                extra_kFF       = 26*14 if self.enable_aurora else 0
+                extra_BRAM      = 40*0 if self.enable_aurora else 0
+                predicted_kLUT  = predicted_logic_resources[0][0] + extra_kLUT
+                predicted_kFF   = predicted_logic_resources[0][1] + extra_kFF
+                predicted_DSP   = predicted_logic_resources[0][2]
+                predicted_BRAM  = predicted_mem_resources[0][0] + extra_BRAM
+                predicted_URAM  = predicted_mem_resources[0][1]
+                pct_LUT     = predicted_kLUT    / self.target_fpga_resources_dict["kLUT"]
+                pct_FF      = predicted_kFF     / self.target_fpga_resources_dict["kFF"]
+                pct_DSP     = predicted_DSP     / self.target_fpga_resources_dict["DSP"]
+                pct_BRAM    = predicted_BRAM    / self.target_fpga_resources_dict["BRAM"]
+                pct_URAM    = predicted_URAM    / self.target_fpga_resources_dict["URAM"]
 
-                freq_estimate = frequency_model.predict(labelled_data)
+                predicted_fpga_resources = pd.DataFrame(
+                    columns =   ["%LUT",  "%FF", "%DSP", "%BRAM", "%URAM" ]
+                    ,data   =   [[ pct_LUT, pct_FF, pct_DSP, pct_BRAM, pct_URAM ]]
+                )
+
+                bitstream_will_generate = bitstream_completion_model.predict( predicted_fpga_resources )
+                freq_estimate = frequency_model.predict( predicted_fpga_resources )
                 freq_estimate = round( freq_estimate[0], 2 )
                 tsb.def_freq(freq_estimate)
+
+                debug_print = "h={:<3}, ".format(h)
+                debug_print += "{}".format(tsb)
+                debug_print += "L={:<3}".format(seclen_M)
+                if (bitstream_will_generate):
+                    debug_print += "   YES generate"
+                else:
+                    debug_print += "   NO generate"
+                print(debug_print)
 
                 if (bitstream_will_generate):
                     self.proposals_per_hl[hl].append(tsb)
@@ -393,6 +481,43 @@ class BloomFilterDesignGenerator:
 
 
     """
+    After the HL arrays are generated, log them into a CSV file.
+    """
+    def log_HLarrays(self):
+        csv_file = open(OUTPUT_CSV, 'a', newline="")
+        csv_writer = csv.writer(csv_file)
+        csv_row = [self.n, self.fp]
+
+        self.gen_HLarr()
+
+        for h in range(1, MAX_NUM_HASHES):
+            if h in self.Harr:
+                i = self.Harr.index(h)
+                sec = self.seclen_arr[i]
+                L = sec*h
+
+                if (sec > 1024*1024):
+                    tmp = int(round(sec/(1024*1024)))
+                    tmp = tmp*1024*1024
+                    #tmp = str(tmp) + "M"
+                elif (sec > 1024):
+                    tmp = int(sec/1024)
+                    tmp = tmp*1024
+                    #tmp = str(tmp) + "k"
+                else:
+                    tmp = int(sec)
+
+                csv_row.append(tmp)
+
+                print("h = {h:>3}, L = {L:>15,},     sec = {sec:>15,}".format(h=h, L=L, sec=sec))
+            else:
+                csv_row.append('-')
+
+        csv_writer.writerow(csv_row)
+
+
+
+    """
     - A "request" is a pair of (n,fp) - so a user is requesting a bloom filter design 
         that meets these two algorithmic parameters.
     - This function generates many design PROPOSALS, for one request.
@@ -400,6 +525,7 @@ class BloomFilterDesignGenerator:
     def gen_proposals_for_one_request(self):
         print("Received num_insertions = {n:,}, fp_rate = {fp}".format(n=n, fp=fp), flush=True)
         self.gen_HLarr()
+        self.log_HLarrays()
         self.gen_all_proposals()
         self.prune_proposals()
 
@@ -417,20 +543,26 @@ class BloomFilterDesignGenerator:
 if __name__ == "__main__":
     print("")
 
-    (sweep, n, fp) = ReadArguments()
+    (sweep, n, fp, design_type, vivado_version, enable_aurora) = ReadArguments()
+
+    fpga_resources_dict =  {"kLUT": 1304, "kFF": 2607, "BRAM": 2016, "URAM": 960, "DSP": 9024}
 
     if (not sweep):
-        dg = BloomFilterDesignGenerator(n, fp)
+        dg = BloomFilterDesignGenerator(n, fp, fpga_resources_dict, design_type, vivado_version, enable_aurora)
         dg.gen_proposals_for_one_request()
 
 
     elif (sweep):
-        proposed_eps = [0.01, 0.005, 0.002, 0.001]
-        proposed_n = [8000000]
+        proposed_eps_pcts = [0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001]
+        proposed_eps = [x / 100 for x in proposed_eps_pcts]
+        proposed_n = [2, 4, 6, 8, 10, 11, 12, 13, 14, 15]
+        proposed_n = [x * 1000 * 1000 for x in proposed_n]
+        print(proposed_eps)
+        print(proposed_n)
         for fp in proposed_eps:
             print("---")
             for n in proposed_n:
-                dg = BloomFilterDesignGenerator(n, fp)
+                dg = BloomFilterDesignGenerator(n, fp, fpga_resources_dict, design_type, vivado_version, enable_aurora)
                 dg.gen_proposals_for_one_request()
                 print("")
     print("")

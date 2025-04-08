@@ -45,26 +45,26 @@ class ArbCodeGenerator:
 
     def generate_hier_arb_fwd(self):
         codeArr = []
+
         codeArr.append('void bloom_arb_forwarder(' + "\n")
         codeArr.append('        int arb_idx' + "\n")
         codeArr.append('        ,int kp_idx' + "\n")
-        codeArr.append('        ,tapa::istreams<HASHONLY_DTYPE, NUM_STM>                         & hash_stream' + "\n")
+        codeArr.append('        ,tapa::istreams<COMP2ARB_DTYPE, NUM_STM>                         & comp2arb_stream' + "\n")
         codeArr.append('        ,tapa::ostreams<PACKED_HASH_DTYPE, NUM_STM*BV_NUM_PARTITIONS>    & arb_stream' + "\n")
+        codeArr.append('        ,int NUM_LOADS_PER_STM' + "\n")
         codeArr.append('){' + "\n")
         codeArr.append('    typedef struct {' + "\n")
         codeArr.append('        ap_uint<1>          valid;' + "\n")
         codeArr.append('        PACKED_HASH_DTYPE   value;' + "\n")
-        codeArr.append('        uint32_t            target_partition_idx;' + "\n")
+        codeArr.append('        PARTIDX_DTYPE       target_partition_idx;' + "\n")
         codeArr.append('    } XBAR_DTYPE;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    const int READ_STOP_COUNT =     NUM_STM * KEYPAIRS_PER_STM;' + "\n")
-        codeArr.append('    const int WRITE_STOP_COUNT =    KEYPAIRS_PER_STM;' + "\n")
-        codeArr.append('    int total_num_reads = 0;' + "\n")
-        codeArr.append('    int total_num_writes = 0;' + "\n")
+
+        codeArr.append('    int finishcheck_num_streams_done = 0;' + "\n")
+        codeArr.append('    int finishcheck_written_xbar_entries = 0;' + "\n")
+        codeArr.append('    bool finished_computing = 0;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    int num_writes_per_stm[NUM_STM];' + "\n")
-        codeArr.append('    #pragma HLS ARRAY_PARTITION variable=num_writes_per_stm dim=0 complete' + "\n")
-        codeArr.append('' + "\n")
+
         codeArr.append('    #ifdef __SYNTHESIS__' + "\n")
         codeArr.append('    /* TAPA Known-issue: Static keyword fails CSIM because this' + "\n")
         codeArr.append('       isnt thread-safe. But when running the HW build, it will ' + "\n")
@@ -85,30 +85,82 @@ class ArbCodeGenerator:
         codeArr.append('    #pragma HLS ARRAY_PARTITION variable=xbar dim=0 complete' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    #ifndef __SYNTHESIS__' + "\n")
-        codeArr.append('    printf("NOTE: USING HIERARCHICAL ARBITER!!!\\n");' + "\n")
+        codeArr.append('    printf("NOTE: USING SEPARATED_HIERARB_PER_HASH ARBITER!!!\\n");' + "\n")
         codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    INIT_LOOP:' + "\n")
         codeArr.append('    for (int i = 0; i < NUM_STM; ++i)' + "\n")
         codeArr.append('    {' + "\n")
         codeArr.append('        reads_per_input[i] = 0;' + "\n")
-        codeArr.append('        num_writes_per_stm[i] = 0;' + "\n")
         codeArr.append('        xbar[i].valid = 0;' + "\n")
         codeArr.append('    }' + "\n")
         codeArr.append('' + "\n")
+
+
         codeArr.append('    MAIN_LOOP:' + "\n")
-        codeArr.append('    while (total_num_reads < READ_STOP_COUNT  ||' + "\n")
-        for i in range(0, self.config.num_stm):
-            if (i < self.config.num_stm-1):
-                OR = " ||"
-            else:
-                OR = ""
-            codeArr.append('            num_writes_per_stm[{i}] < WRITE_STOP_COUNT {OR}'.format(i=i, OR=OR) + "\n")
-        codeArr.append('            #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
-        codeArr.append('             crash. ||' + "\n")
-        codeArr.append('            #endif' + "\n")
-        codeArr.append('    ) {' + "\n")
+        codeArr.append('    while (finished_computing == 0) {' + "\n")
         codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
+
+
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        //// FINISHING LOGIC' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('' + "\n")
+
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH):
+            codeArr.append('        FINISH_COMPUTATION_LOGIC:' + "\n")
+            codeArr.append('        // Determine whether or not this module can stop.' + "\n")
+            codeArr.append('        // In this implementation, every cycle it will check one stream to see if it is done.' + "\n")
+            codeArr.append('        // I think this will achieve higher frequency than checking all of them each cycle.' + "\n")
+            codeArr.append('        // And it doesnt matter if we "waste" a few cycles waiting for us to finish.' + "\n")
+            codeArr.append('        if (finishcheck_num_streams_done < NUM_STM) {' + "\n")
+            codeArr.append('            if ( reads_per_input[finishcheck_num_streams_done] == NUM_LOADS_PER_STM ) {' + "\n")
+            codeArr.append('                #ifdef __DO_DEBUG_PRINTS__' + "\n")
+            codeArr.append('                printf("ARBITER FORWARDER #%d kp%d - stream #%d has finished.\\n",' + "\n")
+            codeArr.append('                        arb_idx, kp_idx,' + "\n")
+            codeArr.append('                        finishcheck_num_streams_done' + "\n")
+            codeArr.append('                );' + "\n")
+            codeArr.append('                #endif' + "\n")
+            codeArr.append('                finishcheck_num_streams_done++;' + "\n")
+            codeArr.append('            }' + "\n")
+            codeArr.append('        }' + "\n")
+            codeArr.append('        else if (finishcheck_num_streams_done == NUM_STM &&' + "\n")
+            codeArr.append('                finishcheck_written_xbar_entries < NUM_STM' + "\n")
+            codeArr.append('        ) {' + "\n")
+            codeArr.append('            if (xbar[finishcheck_written_xbar_entries].valid == 0) {' + "\n")
+            codeArr.append('                finishcheck_written_xbar_entries++;' + "\n")
+            codeArr.append('            }' + "\n")
+            codeArr.append('        }' + "\n")
+            codeArr.append('        else if (finishcheck_num_streams_done == NUM_STM &&' + "\n")
+            codeArr.append('                finishcheck_written_xbar_entries == NUM_STM' + "\n")
+            codeArr.append('        ) {' + "\n")
+            codeArr.append('            finished_computing = 1;' + "\n")
+            codeArr.append('        }' + "\n")
+
+
+        elif (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_SINGLECYCLE_EXIT_CHECK):
+            codeArr.append('        if (' + "\n")
+            for sidx in range(0, self.config.num_stm):
+                codeArr.append('            reads_per_input[{sidx}] == NUM_LOADS_PER_STM &&'.format(sidx=sidx) + "\n")
+            for sidx in range(0, self.config.num_stm):
+                codeArr.append('            xbar[{sidx}].valid == 0 &&'.format(sidx=sidx) + "\n")
+            codeArr.append('            1' + "\n")
+            codeArr.append('            #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
+            codeArr.append('            crash(compilation)' + "\n")
+            codeArr.append('            #endif' + "\n")
+            codeArr.append('        ) {' + "\n")
+            codeArr.append('            //finished_computing = 1;   // This gets pretty good frequency, because it still implements a multicycle path' + "\n")
+            codeArr.append('            break;' + "\n")
+            codeArr.append('        }' + "\n")
+
+        else:
+            raise AssertionError("Something went wrong in the code generator...")
+
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+
+
+
         codeArr.append('        RD_LOGIC:' + "\n")
         codeArr.append('        for (int strm_idx = 0; strm_idx < NUM_STM; ++strm_idx) {' + "\n")
         codeArr.append('        #pragma HLS UNROLL' + "\n")
@@ -122,14 +174,11 @@ class ArbCodeGenerator:
         codeArr.append('            {' + "\n")
         codeArr.append('                // Dont replace this value.' + "\n")
         codeArr.append('            }' + "\n")
-        codeArr.append('            else if (!hash_stream[strm_idx].empty())' + "\n")
+        codeArr.append('            else if (!comp2arb_stream[strm_idx].empty())' + "\n")
         codeArr.append('            {' + "\n")
         codeArr.append('                // Hash and partition data:' + "\n")
-        codeArr.append('                HASHONLY_DTYPE  tmp_hash = hash_stream[strm_idx].read();' + "\n")
-        codeArr.append('                HASHONLY_DTYPE  idx_inside_partition = tmp_hash % BV_PARTITION_LENGTH;' + "\n")
-        codeArr.append('                int             partition_idx = (tmp_hash / BV_PARTITION_LENGTH);' + "\n")
+        codeArr.append('                COMP2ARB_DTYPE  rd_val = comp2arb_stream[strm_idx].read();' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('                total_num_reads++;' + "\n")
         codeArr.append('                reads_per_input[strm_idx]++;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                // Pack metadata' + "\n")
@@ -138,11 +187,11 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('                // Pack final payload' + "\n")
         codeArr.append('                packed_hashval.md = cur_metadata;' + "\n")
-        codeArr.append('                packed_hashval.hash = idx_inside_partition;' + "\n")
+        codeArr.append('                packed_hashval.hash = rd_val.lookup_idx;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                xbar[strm_idx].valid = 1;' + "\n")
         codeArr.append('                xbar[strm_idx].value = packed_hashval;' + "\n")
-        codeArr.append('                xbar[strm_idx].target_partition_idx = partition_idx;' + "\n")
+        codeArr.append('                xbar[strm_idx].target_partition_idx = rd_val.partition_idx;' + "\n")
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('' + "\n")
@@ -154,7 +203,7 @@ class ArbCodeGenerator:
         codeArr.append('        {' + "\n")
         codeArr.append('            printf("ARBITER FORWARDER #%d kp%d - xbar[%d][%d]: valid=%d, input_idx=%d\\n",' + "\n")
         codeArr.append('                    arb_idx, kp_idx,' + "\n")
-        codeArr.append('                    xbar[strm].target_partition_idx,' + "\n")
+        codeArr.append('                    xbar[strm].target_partition_idx.to_int(),' + "\n")
         codeArr.append('                    strm,' + "\n")
         codeArr.append('                    xbar[strm].valid.to_int(),' + "\n")
         codeArr.append('                    xbar[strm].value.md.iidx.to_int()' + "\n")
@@ -167,8 +216,6 @@ class ArbCodeGenerator:
         codeArr.append('        for (int partition_idx = 0; partition_idx < BV_NUM_PARTITIONS; ++partition_idx) ' + "\n")
         codeArr.append('        {' + "\n")
         codeArr.append('        #pragma HLS UNROLL' + "\n")
-        codeArr.append('            bool                found = false;' + "\n")
-        codeArr.append('            uint32_t            found_strm_idx = 0;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('            for (int strm_idx = 0; strm_idx < NUM_STM; ++strm_idx)' + "\n")
         codeArr.append('            {' + "\n")
@@ -180,7 +227,6 @@ class ArbCodeGenerator:
         codeArr.append('                {' + "\n")
         codeArr.append('                    if (arb_stream[out_fifo_idx].try_write( xbar[strm_idx].value ))' + "\n")
         codeArr.append('                    {' + "\n")
-        codeArr.append('                        num_writes_per_stm[strm_idx]++;' + "\n")
         codeArr.append('                        xbar[strm_idx].valid = 0;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                        #ifdef __DO_DEBUG_PRINTS__' + "\n")
@@ -225,7 +271,10 @@ class ArbCodeGenerator:
         codeArr.append('        int partition_idx,' + "\n")
         codeArr.append('        int kp_idx,' + "\n")
         codeArr.append('        int atom_ID,' + "\n")
-        codeArr.append('        tapa::istream<RATEMON_FEEDBACK_DTYPE>   & ratemon_stream,' + "\n")
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("WARNING: NOT USING RATELIMITING!")
+        else:
+            codeArr.append('        tapa::istream<RATEMON_FEEDBACK_DTYPE>   & ratemon_stream,' + "\n")
         codeArr.append('        tapa::istream<PACKED_HASH_DTYPE>        & in_stream0,' + "\n")
         codeArr.append('        tapa::istream<PACKED_HASH_DTYPE>        & in_stream1,' + "\n")
         codeArr.append('        tapa::ostream<PACKED_HASH_DTYPE>        & out_stream' + "\n")
@@ -240,10 +289,15 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('    RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
         
-        for s in range(0, self.config.num_stm):
-            codeArr.append('    INPUT_IDX_DTYPE         min_output_idx_s{s} = 0;'.format(s=s) + "\n")
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            for s in range(0, self.config.num_stm):
+                codeArr.append('    INPUT_IDX_DTYPE         min_output_idx_s{s} = MAX_INPUT_IDX;'.format(s=s) + "\n")
+        else:
+            for s in range(0, self.config.num_stm):
+                codeArr.append('    INPUT_IDX_DTYPE         min_output_idx_s{s} = 0;'.format(s=s) + "\n")
 
         codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('    INPUT_IDX_DTYPE         min_output_idx = 0;' + "\n")
         codeArr.append('    bool    print_xbar = 0;' + "\n")
         codeArr.append('    #endif' + "\n")
         codeArr.append('    ' + "\n")
@@ -260,31 +314,41 @@ class ArbCodeGenerator:
         codeArr.append('    while (1) {' + "\n")
         codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('        RATEMON_LOGIC:' + "\n")
-        codeArr.append('        if (!ratemon_stream.empty()) {' + "\n")
-        codeArr.append('            feedback = ratemon_stream.read();' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('            #ifdef __DO_DEBUG_PRINTS__' + "\n")
-        codeArr.append('            //if (partition_idx == 0 && atom_ID == \'a\')' + "\n")
-        codeArr.append('            //{' + "\n")
-        codeArr.append('            //    printf("ARBITER ATOM [%d][%d][%c] - feedback came in. %d, %d, %d, %d.\\n",' + "\n")
-        codeArr.append('            //            arb_idx, partition_idx, atom_ID,' + "\n")
-        codeArr.append('            //            feedback.strm0_out_idx.to_int(),' + "\n")
-        codeArr.append('            //            feedback.strm1_out_idx.to_int(),' + "\n")
-        codeArr.append('            //            feedback.strm2_out_idx.to_int(),' + "\n")
-        codeArr.append('            //            feedback.strm3_out_idx.to_int()' + "\n")
-        codeArr.append('            //    );' + "\n")
-        codeArr.append('            //}' + "\n")
-        codeArr.append('            #endif' + "\n")
-
-        codeArr.append('' + "\n")
-        codeArr.append('    // Manually unroll the min_output_idx logic, to reduce latency within the atoms.' + "\n")
-        codeArr.append('    // With only one variable this takes one more cycle.' + "\n")
-        for s in range(0, self.config.num_stm):
-            codeArr.append('            min_output_idx_s{s} = feedback.strm{s}_out_idx;'.format(s=s) + "\n")
 
 
-        codeArr.append('        }' + "\n")
+
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            pass
+        else:
+            codeArr.append('        RATEMON_LOGIC:' + "\n")
+            codeArr.append('        if (!ratemon_stream.empty()) {' + "\n")
+            codeArr.append('            feedback = ratemon_stream.read();' + "\n")
+            codeArr.append('' + "\n")
+            codeArr.append('            #ifdef __DO_DEBUG_PRINTS__' + "\n")
+            codeArr.append('            //if (partition_idx == 0 && atom_ID == \'a\')' + "\n")
+            codeArr.append('            //{' + "\n")
+            codeArr.append('            //    printf("ARBITER ATOM [%d][%d][%c] - feedback came in. %d, %d, %d, %d.\\n",' + "\n")
+            codeArr.append('            //            arb_idx, partition_idx, atom_ID,' + "\n")
+            codeArr.append('            //            feedback.strm0_out_idx.to_int(),' + "\n")
+            codeArr.append('            //            feedback.strm1_out_idx.to_int(),' + "\n")
+            codeArr.append('            //            feedback.strm2_out_idx.to_int(),' + "\n")
+            codeArr.append('            //            feedback.strm3_out_idx.to_int()' + "\n")
+            codeArr.append('            //    );' + "\n")
+            codeArr.append('            //}' + "\n")
+            codeArr.append('            #endif' + "\n")
+
+            codeArr.append('' + "\n")
+            codeArr.append('            // Manually unroll the min_output_idx logic, to reduce latency within the atoms.' + "\n")
+            codeArr.append('            // With only one variable this takes one more cycle.' + "\n")
+
+            for s in range(0, self.config.num_stm):
+                codeArr.append('            min_output_idx_s{s} = feedback.strm{s}_out_idx;'.format(s=s) + "\n")
+
+            codeArr.append('        }' + "\n")
+
+
+
+
         codeArr.append('' + "\n")
         codeArr.append('        RD_LOGIC:' + "\n")
         codeArr.append('        if (xbar[0].valid == 1) {' + "\n")
@@ -324,7 +388,17 @@ class ArbCodeGenerator:
         codeArr.append('            #endif' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('' + "\n")
+
         codeArr.append('        #ifdef __DO_DEBUG_PRINTS__' + "\n")
+
+        codeArr.append('        min_output_idx = min_output_idx_s0;' + "\n")
+        for s in range(1, self.config.num_stm):
+            codeArr.append('        min_output_idx = min_output_idx_s{s} < min_output_idx ? min_output_idx_s{s} : min_output_idx;'.format(s=s) + "\n")
+        codeArr.append('        #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
+        codeArr.append('        crash(compilation);' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('' + "\n")
+
         codeArr.append('        if (print_xbar){' + "\n")
         codeArr.append('            for (int i = 0; i < 2; ++i)' + "\n")
         codeArr.append('            {' + "\n")
@@ -345,6 +419,7 @@ class ArbCodeGenerator:
         codeArr.append('            );' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('        #endif' + "\n")
+
         codeArr.append('' + "\n")
         codeArr.append('        WR_LOGIC:' + "\n")
         codeArr.append('        #ifdef __DO_DEBUG_PRINTS__' + "\n")
@@ -353,8 +428,12 @@ class ArbCodeGenerator:
         codeArr.append('        int     valid_idxes = 0;' + "\n")
 
 
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("TODO for (BLOOM-159): remove the ratelimiting calculation?")
+
+
         for s in range(0, self.config.num_stm):
-            codeArr.append('        int allowed_idx_s{s} = min_output_idx_s{s} + (SHUFFLEBUF_SZ);'.format(s=s) + "\n")
+            codeArr.append('        int allowed_idx_s{s} = min_output_idx_s{s} + (ARB_RATELIM_DISTANCE);'.format(s=s) + "\n")
 
         codeArr.append('        if (xbar[0].valid &&' + "\n")
         for s in range(0, self.config.num_stm):
@@ -411,14 +490,15 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('        #ifdef __DO_DEBUG_PRINTS__' + "\n")
         codeArr.append('        if (print_xbar_idx != -1) {' + "\n")
+        codeArr.append('            int allowed_idx = min_output_idx + (ARB_RATELIM_DISTANCE);' + "\n")
         codeArr.append('            printf("ARBITER ATOM [%d][%d][%c] kp%d - WROTE from xbar %d. hash/part/strm = (%d,%d,%d), input_idx=%d, allowed_idx=%d\\n",' + "\n")
         codeArr.append('                    arb_idx, partition_idx, atom_ID,' + "\n")
         codeArr.append('                    kp_idx,' + "\n")
         codeArr.append('                    print_xbar_idx,' + "\n")
         codeArr.append('                    arb_idx,' + "\n")
         codeArr.append('                    partition_idx,' + "\n")
-        codeArr.append('                    xbar[1].value.md.sidx.to_int(),' + "\n")
-        codeArr.append('                    xbar[1].value.md.iidx.to_int(),' + "\n")
+        codeArr.append('                    xbar[print_xbar_idx].value.md.sidx.to_int(),' + "\n")
+        codeArr.append('                    xbar[print_xbar_idx].value.md.iidx.to_int(),' + "\n")
         codeArr.append('                    allowed_idx' + "\n")
         codeArr.append('            );' + "\n")
         codeArr.append('        }' + "\n")
@@ -442,6 +522,10 @@ class ArbCodeGenerator:
         FAST_HLS_MODE = 1
         codeArr = []
 
+        if (self.config.num_stm >= 10):
+            errormsg = "{}: On Oct22 2024, we found that with v2022.1 and S>=10, Vitis will schedule the Ratemonitor with an II=101. Use S < 10.".format(__name__)
+            print(errormsg)
+            raise AssertionError(errormsg)
 
         codeArr.append('void bloom_arbiter_ratemonitor(' + "\n")
         codeArr.append('    int arb_idx' + "\n")
@@ -458,30 +542,12 @@ class ArbCodeGenerator:
         codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
 
-        codeArr.append('    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('    ,tapa::ostream<PERFCTR_DTYPE>                               &perfctr_out' + "\n")
-        codeArr.append('    #endif' + "\n")
+        codeArr.append('    ,int NUM_LOADS_PER_STM' + "\n")
         codeArr.append('){' + "\n")
-        codeArr.append('    int WRITE_STOP_COUNT = 0;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    /* Depending on which level this ratemon is in, ' + "\n")
-        codeArr.append('     * it expects a different number of writes.' + "\n")
-        codeArr.append('     */' + "\n")
-        codeArr.append('    WRITE_STOP_COUNT = NUM_STM * KEYPAIRS_PER_STM;' + "\n")
+        codeArr.append('    int WRITE_STOP_COUNT = NUM_STM * NUM_LOADS_PER_STM;' + "\n")
         codeArr.append('    int writes_per_partition[BV_NUM_PARTITIONS] = {};' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('    BIT_DTYPE       did_read;' + "\n")
-        codeArr.append('    BIT_DTYPE       did_write;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   stall_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   readonly_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   writeonly_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   readwrite_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   total_cycles = 0;' + "\n")
-        codeArr.append('    #else' + "\n")
-        codeArr.append('    int             CRASH_COMPILATION_IF_MISTAKE;' + "\n")
-        codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    typedef struct {' + "\n")
         codeArr.append('        BIT_DTYPE           valid;' + "\n")
@@ -497,7 +563,7 @@ class ArbCodeGenerator:
         codeArr.append('    #pragma HLS ARRAY_PARTITION variable=xbar dim=0 complete' + "\n")
         codeArr.append('    INPUT_IDX_DTYPE         min_output_idx[NUM_STM];' + "\n")
         codeArr.append('    #pragma HLS ARRAY_PARTITION variable=min_output_idx dim=0 complete' + "\n")
-        codeArr.append('    BIT_DTYPE               idx_tracker[NUM_STM][SHUFFLEBUF_SZ];' + "\n")
+        codeArr.append('    BIT_DTYPE               idx_tracker[NUM_STM][ARB_RLDIST_NEXT_POW_TWO];' + "\n")
         codeArr.append('    #pragma HLS ARRAY_PARTITION variable=idx_tracker dim=0 complete' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    INIT_LOOP:' + "\n")
@@ -510,35 +576,71 @@ class ArbCodeGenerator:
         codeArr.append('    for (int i = 0; i < NUM_STM; ++i) {' + "\n")
         codeArr.append('        min_output_idx[i] = 0;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('        for (int j = 0; j < SHUFFLEBUF_SZ; ++j) {' + "\n")
+        codeArr.append('        for (int j = 0; j < ARB_RLDIST_NEXT_POW_TWO; ++j) {' + "\n")
         codeArr.append('            idx_tracker[i][j] = 0;' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('    }' + "\n")
         codeArr.append('' + "\n")
+
+
+        codeArr.append('    bool finished_computing = 0;' + "\n")
+        codeArr.append('    int finishcheck_partition_tracker = 0;' + "\n")
+        codeArr.append('    int finishcheck_num_writes_counter = 0;' + "\n")
+        codeArr.append('' + "\n")
         codeArr.append('    MAIN_LOOP:' + "\n")
-        codeArr.append('    while (' + "\n")
-
-        for p in range(0, self.config.num_partitions):
-            if (p == self.config.num_partitions-1):
-                maybe_plus = ""
-            else:
-                maybe_plus = "+"
-            codeArr.append('            writes_per_partition[{p}] {maybe_plus}'.format(p=p, maybe_plus=maybe_plus) + "\n")
-
-        codeArr.append('                                < WRITE_STOP_COUNT)' + "\n")
-        codeArr.append('    {' + "\n")
+        codeArr.append('    while (finished_computing == 0) {' + "\n")
         codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        #if BV_NUM_PARTITIONS != ({})       // BECAUSE OF THE LOOP BOUND ^'.format(self.config.num_partitions) + "\n")
-        codeArr.append('        crash(crash' + "\n")
-        codeArr.append('        #endif' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        did_read = 0;' + "\n")
-        codeArr.append('        did_write = 0;' + "\n")
-        codeArr.append('        #endif' + "\n")
-        codeArr.append('' + "\n")
         codeArr.append('        RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
+        codeArr.append('' + "\n")
+
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        //// FINISHING LOGIC' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('' + "\n")
+
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH):
+            codeArr.append('        FINISH_COMPUTATION_LOGIC:' + "\n")
+            codeArr.append('        if (finishcheck_partition_tracker < BV_NUM_PARTITIONS)' + "\n")
+            codeArr.append('        {' + "\n")
+            codeArr.append('            finishcheck_num_writes_counter += writes_per_partition[finishcheck_partition_tracker];' + "\n")
+            codeArr.append('            finishcheck_partition_tracker++;' + "\n")
+            codeArr.append('        }' + "\n")
+            codeArr.append('' + "\n")
+            codeArr.append('        else if (finishcheck_partition_tracker == BV_NUM_PARTITIONS &&' + "\n")
+            codeArr.append('            finishcheck_num_writes_counter == WRITE_STOP_COUNT' + "\n")
+            codeArr.append('        ) {' + "\n")
+            codeArr.append('            finished_computing = 1;' + "\n")
+            codeArr.append('        }' + "\n")
+            codeArr.append('        else if (finishcheck_partition_tracker == BV_NUM_PARTITIONS)' + "\n")
+            codeArr.append('        {' + "\n")
+            codeArr.append('            finishcheck_partition_tracker = 0;' + "\n")
+            codeArr.append('            finishcheck_num_writes_counter = 0;' + "\n")
+            codeArr.append('        }' + "\n")
+
+        elif (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_SINGLECYCLE_EXIT_CHECK):
+            codeArr.append('        if (' + "\n")
+            for pidx in range(0, self.config.num_partitions):
+                codeArr.append('            writes_per_partition[{p}] +'.format(p=pidx) + "\n")
+            codeArr.append('            0 == WRITE_STOP_COUNT' + "\n")
+            codeArr.append('            #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+            codeArr.append('            crash(compilation)' + "\n")
+            codeArr.append('            #endif' + "\n")
+            codeArr.append('        ) {' + "\n")
+            codeArr.append('            //finished_computing = 1;   // This gets pretty good frequency, because it still implements a multicycle path' + "\n")
+            codeArr.append('            break;' + "\n")
+            codeArr.append('        }' + "\n")
+
+        else:
+            raise AssertionError("Something went wrong in the code generator...")
+
+        codeArr.append('' + "\n")
+
+
+
+
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        //// READ LOGIC' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('        RD_INPUTS:' + "\n")
         codeArr.append('        for (int partition_idx = 0; partition_idx < BV_NUM_PARTITIONS; ++partition_idx) {' + "\n")
@@ -563,9 +665,6 @@ class ArbCodeGenerator:
         codeArr.append('                        xbar[partition_idx].value.md.iidx.to_int()' + "\n")
         codeArr.append('                );' + "\n")
         codeArr.append('                #endif' + "\n")
-        codeArr.append('                #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('                did_read = 1;' + "\n")
-        codeArr.append('                #endif' + "\n")
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('' + "\n")
@@ -578,11 +677,13 @@ class ArbCodeGenerator:
             codeArr.append('' + "\n")
 
             ### THIS VERSION OF THE CODE achieves worse frequency.
-            if (self.config.vivado_year >= 2022):
-                print(" {}: using FAST HLS Mode for vivado version {}, which might lead to poor frequency?".format(__name__, self.config.vivado_year))
+            if (self.config.vivado_year >= 2023 or
+                self.config.vivado_version == "2022.2"
+            ):
+                print(" {}: using FAST HLS Mode for vivado version {}, which might lead to poor frequency?".format(__name__, self.config.vivado_version))
                 codeArr.append('        #define RATEMON_WR_OUTPUT_FOR_PART(PART)    \\' + "\n")
                 codeArr.append('            for (int sidx = 0; sidx < NUM_STM; ++sidx) {    \\' + "\n")
-                codeArr.append('                int offset = (xbar[PART].value.md.iidx) % SHUFFLEBUF_SZ;    \\' + "\n")
+                codeArr.append('                int offset = (xbar[PART].value.md.iidx) % ARB_RLDIST_NEXT_POW_TWO;    \\' + "\n")
                 codeArr.append('                if (xbar[PART].valid && \\' + "\n")
                 codeArr.append('                    xbar[PART].value.md.sidx == sidx && \\' + "\n")
                 codeArr.append('                    !arb_stream_out[PART].full())   \\' + "\n")
@@ -597,16 +698,16 @@ class ArbCodeGenerator:
                 codeArr.append('' + "\n")
                 codeArr.append('' + "\n")
 
-            ### THIS VERSION OF THE CODE DOES NOT ACHIEVE II=1 on Vitis 2022 and later.
+            ### THIS VERSION OF THE CODE DOES NOT ACHIEVE II=1 on Vitis 2022.2 and later.
             else:
-                print(" {}: using FAST HLS Mode for vivado version {}, which should be good".format(__name__, self.config.vivado_year))
+                print(" {}: using FAST HLS Mode for vivado version {}, which should be good".format(__name__, self.config.vivado_version))
                 codeArr.append('        #define RATEMON_WR_OUTPUT_FOR_PART_STM(PART, STM)   \\' + "\n")
                 codeArr.append('            if (xbar[PART].valid &&     \\' + "\n")
                 codeArr.append('                xbar[PART].value.md.sidx == STM &&  \\' + "\n")
                 codeArr.append('                !arb_stream_out[PART].full()    \\' + "\n")
                 codeArr.append('            )   \\' + "\n")
                 codeArr.append('            {   \\' + "\n")
-                codeArr.append('                int offset = (xbar[PART].value.md.iidx) % SHUFFLEBUF_SZ;    \\' + "\n")
+                codeArr.append('                int offset = (xbar[PART].value.md.iidx) % ARB_RLDIST_NEXT_POW_TWO;    \\' + "\n")
                 codeArr.append('                xbar[PART].valid = 0;   \\' + "\n")
                 codeArr.append('                arb_stream_out[PART].write(xbar[PART].value);   \\' + "\n")
                 codeArr.append('                idx_tracker[ STM ][offset] = 1;    \\' + "\n")
@@ -633,28 +734,33 @@ class ArbCodeGenerator:
 
             codeArr.append('' + "\n")
             codeArr.append('' + "\n")
-            codeArr.append('        ///////////////////////' + "\n")
-            codeArr.append('        // UPDATE_IDCES:' + "\n")
-            codeArr.append('        ///////////////////////' + "\n")
-            codeArr.append('        #define RATEMON_UPDATE_IDX_FOR_STM(STM)     \\' + "\n")
-            codeArr.append('            int shuf_idx##STM = (min_output_idx[STM] + 1) % SHUFFLEBUF_SZ;   \\' + "\n")
-            codeArr.append('            if (idx_tracker[STM][shuf_idx##STM] == 1) {  \\' + "\n")
-            codeArr.append('                min_output_idx[STM] += 1;   \\' + "\n")
-            codeArr.append('                idx_tracker[STM][shuf_idx##STM] = 0;     \\' + "\n")
-            codeArr.append('            }   \\' + "\n")
-            codeArr.append('                //#ifdef __DO_DEBUG_PRINTS__    \\' + "\n")
-            codeArr.append('                //printf("ARBITER RATEMON %d %c kp%d - Updating min_output_idx[%d]=%d\\n",   \\' + "\n")
-            codeArr.append('                //        arb_idx,  \\' + "\n")
-            codeArr.append('                //        ratemon_ID,   \\' + "\n")
-            codeArr.append('                //        kp_idx,   \\' + "\n")
-            codeArr.append('                //        STM,  \\' + "\n")
-            codeArr.append('                //        min_output_idx[STM].to_int()  \\' + "\n")
-            codeArr.append('                //);    \\' + "\n")
-            codeArr.append('                //#endif    \\' + "\n")
-            codeArr.append('' + "\n")
+            if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+                codeArr.append('        ///////////////////////' + "\n")
+                codeArr.append('        // THERE IS NO UPDATE_IDCES LOGIC, since the atoms ignore the ratelimiting information. This is a WIP as of dec12,2024' + "\n")
+                codeArr.append('        ///////////////////////' + "\n")
+            else:
+                codeArr.append('        ///////////////////////' + "\n")
+                codeArr.append('        // UPDATE_IDCES:' + "\n")
+                codeArr.append('        ///////////////////////' + "\n")
+                codeArr.append('        #define RATEMON_UPDATE_IDX_FOR_STM(STM)     \\' + "\n")
+                codeArr.append('            int shuf_idx##STM = (min_output_idx[STM] + 1) % ARB_RLDIST_NEXT_POW_TWO;   \\' + "\n")
+                codeArr.append('            if (idx_tracker[STM][shuf_idx##STM] == 1) {  \\' + "\n")
+                codeArr.append('                min_output_idx[STM] += 1;   \\' + "\n")
+                codeArr.append('                idx_tracker[STM][shuf_idx##STM] = 0;     \\' + "\n")
+                codeArr.append('            }   \\' + "\n")
+                codeArr.append('                //#ifdef __DO_DEBUG_PRINTS__    \\' + "\n")
+                codeArr.append('                //printf("ARBITER RATEMON %d %c kp%d - Updating min_output_idx[%d]=%d\\n",   \\' + "\n")
+                codeArr.append('                //        arb_idx,  \\' + "\n")
+                codeArr.append('                //        ratemon_ID,   \\' + "\n")
+                codeArr.append('                //        kp_idx,   \\' + "\n")
+                codeArr.append('                //        STM,  \\' + "\n")
+                codeArr.append('                //        min_output_idx[STM].to_int()  \\' + "\n")
+                codeArr.append('                //);    \\' + "\n")
+                codeArr.append('                //#endif    \\' + "\n")
+                codeArr.append('' + "\n")
 
-            for s in range(0, self.config.num_stm):
-                codeArr.append('        RATEMON_UPDATE_IDX_FOR_STM({s})'.format(s=s) + "\n")
+                for s in range(0, self.config.num_stm):
+                    codeArr.append('        RATEMON_UPDATE_IDX_FOR_STM({s})'.format(s=s) + "\n")
 
         else:
             print(" {}: using SLOW HLS Mode, which might lead to very long synthesis times".format(__name__))
@@ -663,14 +769,10 @@ class ArbCodeGenerator:
             codeArr.append('            if (xbar[i].valid) ' + "\n")
             codeArr.append('            {' + "\n")
             codeArr.append('                if ( arb_stream_out[i].try_write(xbar[i].value) ) {' + "\n")
-            codeArr.append('                    int offset = (xbar[i].value.md.iidx) % SHUFFLEBUF_SZ;' + "\n")
+            codeArr.append('                    int offset = (xbar[i].value.md.iidx) % ARB_RLDIST_NEXT_POW_TWO;' + "\n")
             codeArr.append('                    xbar[i].valid = 0;' + "\n")
             codeArr.append('                    idx_tracker[ xbar[i].value.md.sidx ][offset] = 1;' + "\n")
             codeArr.append('                    writes_per_partition[i]++;' + "\n")
-            codeArr.append('' + "\n")
-            codeArr.append('                    #if ENABLE_PERF_CTRS' + "\n")
-            codeArr.append('                    did_write = 1;' + "\n")
-            codeArr.append('                    #endif' + "\n")
             codeArr.append('                }' + "\n")
             codeArr.append('            }' + "\n")
             codeArr.append('        }' + "\n")
@@ -679,13 +781,9 @@ class ArbCodeGenerator:
             codeArr.append('        UPDATE_IDCES:' + "\n")
             codeArr.append('        for (int strm_idx = 0; strm_idx < NUM_STM; ++strm_idx) {' + "\n")
             codeArr.append('' + "\n")
-            codeArr.append('            /* TODO: I think if we mod by the nearest power-of-two ABOVE Shufflebuf_sz,' + "\n")
-            codeArr.append('             * then SHUFFLEBUF_SZ doesnt have to be a power of 2. But,' + "\n")
-            codeArr.append('             * the mod by SHUFFLEBUF_SZ will decrease our II if its not a power of 2.' + "\n")
-            codeArr.append('             */' + "\n")
-            codeArr.append('            for (int shuf_idx = (min_output_idx[strm_idx] + 1) % SHUFFLEBUF_SZ, count=0;' + "\n")
-            codeArr.append('                        count < (SHUFFLEBUF_SZ);' + "\n")
-            codeArr.append('                        shuf_idx = (shuf_idx+1)%SHUFFLEBUF_SZ, ++count' + "\n")
+            codeArr.append('            for (int shuf_idx = (min_output_idx[strm_idx] + 1) % ARB_RLDIST_NEXT_POW_TWO, count=0;' + "\n")
+            codeArr.append('                        count < (ARB_RLDIST_NEXT_POW_TWO);' + "\n")
+            codeArr.append('                        shuf_idx = (shuf_idx+1)%ARB_RLDIST_NEXT_POW_TWO, ++count' + "\n")
             codeArr.append('            ) {' + "\n")
             codeArr.append('                //#ifdef __DO_DEBUG_PRINTS__' + "\n")
             codeArr.append('                //if (count == 0)' + "\n")
@@ -727,10 +825,6 @@ class ArbCodeGenerator:
 
         codeArr.append('' + "\n")
         codeArr.append('        WRITE_FEEDBACK:' + "\n")
-        codeArr.append('        /* For the ratemonitors NOT in the last level, we dont ' + "\n")
-        codeArr.append('         * have the data from all 4 streams. So dont attempt to ratelimit' + "\n")
-        codeArr.append('         * based on data we cant get.' + "\n")
-        codeArr.append('         */' + "\n")
 
         for i in range(0, self.config.num_stm):
             codeArr.append('        feedback.strm{i}_out_idx = min_output_idx[{i}];'.format(i=i) + "\n")
@@ -749,72 +843,32 @@ class ArbCodeGenerator:
         codeArr.append('            #endif' + "\n")
         codeArr.append('        }' + "\n")
 
-        codeArr.append('' + "\n")
-        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        UPDATE_PERF_CTRS:' + "\n")
-        codeArr.append('        total_cycles++;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        if (did_write && !did_read){' + "\n")
-        codeArr.append('            writeonly_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (did_read && !did_write){' + "\n")
-        codeArr.append('            readonly_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (!did_read && !did_write){' + "\n")
-        codeArr.append('            stall_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (did_read && did_write){' + "\n")
-        codeArr.append('            readwrite_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        #endif' + "\n")
         codeArr.append('    }' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('    WRITE_PERF_CTRS:' + "\n")
-        codeArr.append('    for (int i = 0; i < NUM_PERFCTR_OUTPUTS; ++i) {' + "\n")
-        codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
-        codeArr.append('        if (i == 0){' + "\n")
-        codeArr.append('            perfctr_out.write(stall_cycles);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (i == 1){' + "\n")
-        codeArr.append('            perfctr_out.write(readonly_cycles);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (i == 2){' + "\n")
-        codeArr.append('            perfctr_out.write(writeonly_cycles);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (i == 3){' + "\n")
-        codeArr.append('            perfctr_out.write(readwrite_cycles);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (i == 4){' + "\n")
-        codeArr.append('            perfctr_out.write(total_cycles);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else{' + "\n")
-        codeArr.append('            perfctr_out.write(55555);' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('    }' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
-        codeArr.append('    printf("ARBITER RATEMON %d %c kp%d - stall_cycles       = %25lu\\n", ' + "\n")
-        codeArr.append('        arb_idx, ratemon_ID, kp_idx, stall_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER RATEMON %d %c kp%d - readonly_cycles    = %25lu\\n", ' + "\n")
-        codeArr.append('        arb_idx, ratemon_ID, kp_idx, readonly_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER RATEMON %d %c kp%d - writeonly_cycles   = %25lu\\n", ' + "\n")
-        codeArr.append('        arb_idx, ratemon_ID, kp_idx, writeonly_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER RATEMON %d %c kp%d - readwrite_cycles   = %25lu\\n", ' + "\n")
-        codeArr.append('        arb_idx, ratemon_ID, kp_idx, readwrite_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER RATEMON %d %c kp%d - total_cycles       = %25lu\\n", ' + "\n")
-        codeArr.append('        arb_idx, ratemon_ID, kp_idx, total_cycles' + "\n")
-        codeArr.append('    );' + "\n")
+
+
+        codeArr.append('    EXITING_LOGIC:' + "\n")
+        codeArr.append('    /* For the next kernel call, we need to reset the ratemonitoring ' + "\n")
+        codeArr.append('        information. Otherwise, initially the atoms will not ratelimit.' + "\n")
+        codeArr.append('        (You can alternatively think of this as resetting the atoms)' + "\n")
+        codeArr.append('    */' + "\n")
+        codeArr.append('    RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
+        for i in range(0, self.config.num_stm):
+            codeArr.append('    feedback.strm{i}_out_idx = 0;'.format(i=i) + "\n")
+        codeArr.append('    #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
+        codeArr.append('    crash!' + "\n")
         codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    #endif  // ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('' + "\n")
+        codeArr.append('    for (int i = 0; i < NUM_ARBITER_ATOMS; ++i) {' + "\n")
+        codeArr.append('    #pragma HLS UNROLL' + "\n")
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('        fdbk_stream_{p}[i].write(feedback);'.format(p=p) + "\n")
+        codeArr.append('        #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('        crash!' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('    }' + "\n")
+
+
         codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
         codeArr.append('    printf("ARBITER RATEMON %d %c - DONE NOW!\\n", arb_idx, ratemon_ID);' + "\n")
         codeArr.append('    #endif' + "\n")
@@ -844,7 +898,10 @@ class ArbCodeGenerator:
         codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
 
-        codeArr.append('    ,tapa::istreams<RATEMON_FEEDBACK_DTYPE, NUM_ARBITER_ATOMS>  &ratemon_feedback' + "\n")
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("WARNING: NOT USING RATELIMITING!")
+        else:
+            codeArr.append('    ,tapa::istreams<RATEMON_FEEDBACK_DTYPE, NUM_ARBITER_ATOMS>  &ratemon_feedback' + "\n")
         codeArr.append('    ,tapa::ostream<PACKED_HASH_DTYPE>                           &arbtree_out' + "\n")
         codeArr.append(') {' + "\n")
 
@@ -956,7 +1013,10 @@ class ArbCodeGenerator:
                 codeArr.append('                ,partition_idx' + "\n")
                 codeArr.append('                ,kp_idx' + "\n")
                 codeArr.append('                ,\'{char}\''.format(char = chr(ord('a') + total_atom_idx) ) + "\n")
-                codeArr.append('                ,ratemon_feedback[{a}]'.format(a=total_atom_idx) + "\n")
+                if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+                    print("WARNING: NOT USING RATELIMITING!")
+                else:
+                    codeArr.append('                ,ratemon_feedback[{a}]'.format(a=total_atom_idx) + "\n")
                 codeArr.append('                ,{}'.format(left_stm_name) + "\n")
                 codeArr.append('                ,{}'.format(right_stm_name) + "\n")
                 codeArr.append('                ,{}'.format(out_stm_name) + "\n")
@@ -1012,25 +1072,37 @@ class ArbCodeGenerator:
     def generate_hier_arb_single_arbiter(self):
         codeArr = []
         
-        codeArr.append('void bloom_single_arbiter(' + "\n")
-        codeArr.append('        int arb_idx' + "\n")
-        codeArr.append('        , int kp_idx' + "\n")
-        codeArr.append('        , tapa::istreams<PACKED_HASH_DTYPE, NUM_STM*BV_NUM_PARTITIONS>  &in_arb_streams' + "\n")
-        codeArr.append('        , tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>          &bv_lookup_stream' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        ,tapa::ostreams<PERFCTR_DTYPE, NUM_ARBITER_ATOMS>           &perfctr_out' + "\n")
-        codeArr.append('        #endif' + "\n")
-        codeArr.append(') {' + "\n")
-        codeArr.append('    tapa::streams<PACKED_HASH_DTYPE,    BV_NUM_PARTITIONS>      arbtree_outputs;' + "\n")
-        codeArr.append('' + "\n")
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            codeArr.append('void bloom_single_arbiter(' + "\n")
+            codeArr.append('        int arb_idx' + "\n")
+            codeArr.append('        , int kp_idx' + "\n")
+            codeArr.append('        , tapa::istreams<PACKED_HASH_DTYPE, NUM_STM*BV_NUM_PARTITIONS>  &in_arb_streams' + "\n")
+            codeArr.append('        , tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>          &arbtree_outputs' + "\n")
+            codeArr.append('        , int NUM_LOADS_PER_STM' + "\n")
+            codeArr.append(') {' + "\n")
+            codeArr.append('' + "\n")
 
-        for p in range(0, self.config.num_partitions):
-            codeArr.append('    tapa::streams<RATEMON_FEEDBACK_DTYPE, NUM_ARBITER_ATOMS>    ratemon_fdbk_streams_p{p};'.format(p=p) + "\n")
-        codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
-        codeArr.append('    crash!' + "\n")
-        codeArr.append('    #endif' + "\n")
-        codeArr.append('' + "\n")
+        else:
+            codeArr.append('void bloom_single_arbiter(' + "\n")
+            codeArr.append('        int arb_idx' + "\n")
+            codeArr.append('        , int kp_idx' + "\n")
+            codeArr.append('        , tapa::istreams<PACKED_HASH_DTYPE, NUM_STM*BV_NUM_PARTITIONS>  &in_arb_streams' + "\n")
+            codeArr.append('        , tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>          &bv_lookup_stream' + "\n")
+            codeArr.append('        , int NUM_LOADS_PER_STM' + "\n")
+            codeArr.append(') {' + "\n")
+            codeArr.append('    tapa::streams<PACKED_HASH_DTYPE,    BV_NUM_PARTITIONS>      arbtree_outputs;' + "\n")
+            codeArr.append('' + "\n")
+
+            for p in range(0, self.config.num_partitions):
+                codeArr.append('    tapa::streams<RATEMON_FEEDBACK_DTYPE, NUM_ARBITER_ATOMS>    ratemon_fdbk_streams_p{p};'.format(p=p) + "\n")
+            codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+            codeArr.append('    crash!' + "\n")
+            codeArr.append('    #endif' + "\n")
+            codeArr.append('' + "\n")
+
+
+
+
         codeArr.append('' + "\n")
         codeArr.append('    tapa::task()' + "\n")
 
@@ -1042,7 +1114,12 @@ class ArbCodeGenerator:
             codeArr.append('                ,kp_idx' + "\n")
             for s in range(0, self.config.num_stm):
                 codeArr.append('                ,in_arb_streams[NUM_STM*{p} + {s}]'.format(p=p, s=s)  + "\n")
-            codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
+
+            if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+                print("WARNING: NOT USING RATELIMITING!")
+            else:
+                codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
+
             codeArr.append('                ,arbtree_outputs[{p}]'.format(p=p) + "\n")
             codeArr.append('        )' + "\n")
         codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
@@ -1050,16 +1127,22 @@ class ArbCodeGenerator:
         codeArr.append('    #endif' + "\n")
 
 
-        codeArr.append('        .invoke<tapa::detach>(' + "\n")
-        codeArr.append('                bloom_arbiter_ratemonitor' + "\n")
-        codeArr.append('                ,arb_idx' + "\n")
-        codeArr.append('                ,kp_idx' + "\n")
-        codeArr.append('                ,\'a\'' + "\n")
-        codeArr.append('                ,arbtree_outputs' + "\n")
-        codeArr.append('                ,bv_lookup_stream' + "\n")
-        for p in range(0, self.config.num_partitions):
-            codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
-        codeArr.append('        )' + "\n")
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("WARNING: NOT CREATING RATEMONITOR!")
+        else:
+            codeArr.append('        .invoke(' + "\n")
+            codeArr.append('                bloom_arbiter_ratemonitor' + "\n")
+            codeArr.append('                ,arb_idx' + "\n")
+            codeArr.append('                ,kp_idx' + "\n")
+            codeArr.append('                ,\'a\'' + "\n")
+            codeArr.append('                ,arbtree_outputs' + "\n")
+            codeArr.append('                ,bv_lookup_stream' + "\n")
+            for p in range(0, self.config.num_partitions):
+                codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
+            codeArr.append('                ,NUM_LOADS_PER_STM' + "\n")
+            codeArr.append('        )' + "\n")
+
+
         codeArr.append('    ;' + "\n")
         codeArr.append('}' + "\n")
         codeArr.append("\n\n\n")
@@ -1091,8 +1174,9 @@ class ArbCodeGenerator:
             codeArr.append('        .invoke( bloom_arb_forwarder,   \\' + "\n")
             codeArr.append('                    {h},  \\'.format(h=h) + "\n")
             codeArr.append('                    KP_IDX, \\' + "\n")
-            codeArr.append('                    hash_stream_h{h}_kp##KP_IDX,  \\'.format(h=h) + "\n")
+            codeArr.append('                    comp2arb_stream_h{h}_kp##KP_IDX,  \\'.format(h=h) + "\n")
             codeArr.append('                    arb{h}_streams_kp##KP_IDX    \\'.format(h=h) + "\n")
+            codeArr.append('                    ,NUM_LOADS_PER_STM  \\' + "\n")
             codeArr.append('        )   \\' + "\n")
         codeArr.append('\\' + "\n")
 
@@ -1104,6 +1188,7 @@ class ArbCodeGenerator:
             codeArr.append('                    bv_lookup_stream_h{h}_kp##KP_IDX  \\'.format(h=h) + "\n")
             if (self.config.enable_perfctrs):
                 codeArr.append('                    , perfctr_out_{h}*/ \\' + "\n")
+            codeArr.append('                    ,NUM_LOADS_PER_STM  \\' + "\n")
             codeArr.append('        )   \\' + "\n")
 
         codeArr.append('' + "\n")
@@ -1126,7 +1211,16 @@ class ArbCodeGenerator:
         codeArr = []
         codeArr.extend(self.generate_hier_arb_fwd())
         codeArr.extend(self.generate_hier_arb_atom())
-        codeArr.extend(self.generate_hier_arb_ratemon())
+
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("WARNING: NOT CREATING RATEMONITOR!")
+        elif (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH or
+              self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_SINGLECYCLE_EXIT_CHECK
+        ):
+            codeArr.extend(self.generate_hier_arb_ratemon())
+        else:
+            raise TypeError("illegal arbiter type")
+
         codeArr.extend(self.generate_hier_arb_singlepartition())
         codeArr.extend(self.generate_hier_arb_single_arbiter())
         codeArr.extend(self.generate_hier_arb_wrapper())
@@ -1260,6 +1354,557 @@ class ArbCodeGenerator:
 
 
 
+    def _generate_separated_monoarb_monoarb(self):
+        codeArr = []
+
+        codeArr.append('void bloom_separated_monoarb_per_hashpart(' + "\n")
+        codeArr.append('    int arb_idx' + "\n")
+        codeArr.append('    ,int partition_idx' + "\n")
+        codeArr.append('    ,int kp_idx' + "\n")
+        codeArr.append('' + "\n")
+
+        for s in range(0, self.config.num_stm):
+            codeArr.append('    ,tapa::istream<PACKED_HASH_DTYPE>           &in_stream{s}'.format(s=s) + "\n")
+        codeArr.append('    #if NUM_STM != ({})'.format(self.config.num_stm) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    ,tapa::istream<RATEMON_FEEDBACK_DTYPE>      &ratemon_stream' + "\n")
+        codeArr.append('    ,tapa::ostream<PACKED_HASH_DTYPE>           &out_stream' + "\n")
+        codeArr.append(') {' + "\n")
+        codeArr.append('    typedef struct {' + "\n")
+        codeArr.append('        ap_uint<1>          valid;' + "\n")
+        codeArr.append('        PACKED_HASH_DTYPE   value;' + "\n")
+        codeArr.append('    } XBAR_DTYPE;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    XBAR_DTYPE xbar[NUM_STM];' + "\n")
+        codeArr.append('    #pragma HLS ARRAY_PARTITION variable=xbar dim=0 complete' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
+        for s in range(0, self.config.num_stm):
+            codeArr.append('    INPUT_IDX_DTYPE         min_output_idx_s{s} = 0;'.format(s=s) + "\n")
+        codeArr.append('    #if NUM_STM != ({})'.format(self.config.num_stm) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    INPUT_IDX_DTYPE         min_output_idx = 0;' + "\n")
+        codeArr.append('    INPUT_IDX_DTYPE         allowed_idx = 0;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    #ifdef __DO_THIS_DEBUG_PRINTS__' + "\n")
+        codeArr.append('    bool    print_xbar = 0;' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    /* Initialize for SW_EMU... but will this guaranteed work for HW builds?' + "\n")
+        codeArr.append('     * It might not be needed for HW builds because each xbar entry should just' + "\n")
+        codeArr.append('     * be invalidated anyways, after writing.' + "\n")
+        codeArr.append('     */' + "\n")
+        codeArr.append('    INIT_LOOP:' + "\n")
+        codeArr.append('    for (int i = 0; i < NUM_STM; ++i) {' + "\n")
+        codeArr.append('        xbar[i].valid = 0;' + "\n")
+        codeArr.append('    }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    MAIN_LOOP:' + "\n")
+        codeArr.append('    while (1)' + "\n")
+        codeArr.append('    {' + "\n")
+        codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        RATEMON_LOGIC:' + "\n")
+        codeArr.append('        if (!ratemon_stream.empty()) {' + "\n")
+        codeArr.append('            feedback = ratemon_stream.read();' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('            //#ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('            //printf("ARBITER_MONO_SEPARATED [%d][%d] - feedback came in. %d, %d, %d, %d.\\n",' + "\n")
+        codeArr.append('            //        arb_idx, partition_idx,' + "\n")
+        codeArr.append('            //        feedback.strm0_out_idx.to_int(),' + "\n")
+        codeArr.append('            //        feedback.strm1_out_idx.to_int(),' + "\n")
+        codeArr.append('            //        feedback.strm2_out_idx.to_int(),' + "\n")
+        codeArr.append('            //        feedback.strm3_out_idx.to_int()' + "\n")
+        codeArr.append('            //);' + "\n")
+        codeArr.append('            //#endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('            // Manually unroll the min_output_idx logic, to reduce latency.' + "\n")
+        codeArr.append('            // With only one variable this takes one more cycle.' + "\n")
+        for s in range(0, self.config.num_stm):
+            codeArr.append('            min_output_idx_s{s} = feedback.strm{s}_out_idx;'.format(s=s) + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        min_output_idx = min_output_idx_s0;' + "\n")
+        for s in range(1, self.config.num_stm):
+            codeArr.append('        min_output_idx = min_output_idx_s{s} < min_output_idx ? min_output_idx_s{s} : min_output_idx;'.format(s=s) + "\n")
+        codeArr.append('        #if NUM_STM != ({})'.format(self.config.num_stm) + "\n")
+        codeArr.append('        crash(compilation);' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        allowed_idx = min_output_idx + (ARB_RATELIM_DISTANCE);' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        RD_LOGIC:' + "\n")
+        codeArr.append('        #define READ_LOGIC_FOR_STM(STM) \\' + "\n")
+        codeArr.append('            if (xbar[STM].valid == 1) {     \\' + "\n")
+        codeArr.append('                /* Dont overwrite it */       \\' + "\n")
+        codeArr.append('            }       \\' + "\n")
+        codeArr.append('            else if (!in_stream##STM.empty()) {     \\' + "\n")
+        codeArr.append('                PACKED_HASH_DTYPE   packed_val = in_stream##STM.read();     \\' + "\n")
+        codeArr.append('                \\' + "\n")
+        codeArr.append('                xbar[STM].value = packed_val;       \\' + "\n")
+        codeArr.append('                xbar[STM].valid = 1;        \\' + "\n")
+        codeArr.append('            }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('                #ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('                crash(compilation); you need to copypaste this print.' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('                //printf("ARBITER_MONO_SEPARATED [%d][%d] kp%d - read from hash/part/strm (%d,%d,%d)\\n",        \\' + "\n")
+        codeArr.append('                //        arb_idx, partition_idx,        \\' + "\n")
+        codeArr.append('                //        kp_idx,     \\' + "\n")
+        codeArr.append('                //        arb_idx, partition_idx, STM     \\' + "\n")
+        codeArr.append('                //);      \\' + "\n")
+        codeArr.append('                //print_xbar = 1;     \\' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('                #endif' + "\n")
+        codeArr.append('' + "\n")
+        for s in range(0, self.config.num_stm):
+            codeArr.append('        READ_LOGIC_FOR_STM({s})'.format(s=s) + "\n")
+        codeArr.append('        #if NUM_STM != ({})'.format(self.config.num_stm) + "\n")
+        codeArr.append('        crash(compilation);' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        //#ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('        //if (print_xbar){' + "\n")
+        codeArr.append('        //    for (int i = 0; i < NUM_STM; ++i)' + "\n")
+        codeArr.append('        //    {' + "\n")
+        codeArr.append('        //        printf("ARBITER_MONO_SEPARATED [%d][%d] kp%d - xbar[%d]: valid=%d, input_idx=%d, strm_idx=%d, bv_idx=%d\\n",' + "\n")
+        codeArr.append('        //                arb_idx, partition_idx,' + "\n")
+        codeArr.append('        //                kp_idx,' + "\n")
+        codeArr.append('        //                i,' + "\n")
+        codeArr.append('        //                xbar[i].valid.to_int(),' + "\n")
+        codeArr.append('        //                xbar[i].value.md.iidx.to_int(),' + "\n")
+        codeArr.append('        //                xbar[i].value.md.sidx.to_int(),' + "\n")
+        codeArr.append('        //                xbar[i].value.hash.to_int()' + "\n")
+        codeArr.append('        //        );' + "\n")
+        codeArr.append('        //    }' + "\n")
+        codeArr.append('        //    printf("ARBITER_MONO_SEPARATED [%d][%d] kp%d - min_output_idx = %d\\n",' + "\n")
+        codeArr.append('        //            arb_idx, partition_idx,' + "\n")
+        codeArr.append('        //            kp_idx,' + "\n")
+        codeArr.append('        //            min_output_idx.to_int()' + "\n")
+        codeArr.append('        //    );' + "\n")
+        codeArr.append('        //}' + "\n")
+        codeArr.append('        //#endif  // __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('        ///////////////////////////////////////////////' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        WR_LOGIC:' + "\n")
+        codeArr.append('        int print_xbar_idx = -1;' + "\n")
+        codeArr.append('        bool found = 0;' + "\n")
+        codeArr.append('        int chosen_sidx = 0;' + "\n")
+        codeArr.append('        int lowest_iidx = MAX_INPUT_IDX;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        for (int sidx = 0; sidx < NUM_STM; ++sidx) {' + "\n")
+        codeArr.append('        #pragma HLS UNROLL' + "\n")
+        codeArr.append('            if (' + "\n")
+        codeArr.append('                xbar[sidx].valid' + "\n")
+        codeArr.append('                && xbar[sidx].value.md.iidx <= allowed_idx' + "\n")
+        codeArr.append('                && xbar[sidx].value.md.iidx < lowest_iidx' + "\n")
+        codeArr.append('            ) {' + "\n")
+        codeArr.append('                found = 1;' + "\n")
+        codeArr.append('                chosen_sidx = sidx;' + "\n")
+        codeArr.append('                lowest_iidx = xbar[sidx].value.md.iidx;' + "\n")
+        codeArr.append('            }' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        if (found) {' + "\n")
+        codeArr.append('            if (out_stream.try_write(xbar[chosen_sidx].value)) {' + "\n")
+        codeArr.append('                xbar[chosen_sidx].valid = 0;' + "\n")
+        codeArr.append('                print_xbar_idx = chosen_sidx;' + "\n")
+        codeArr.append('            }' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        #ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('        if (print_xbar_idx != -1) {' + "\n")
+        codeArr.append('            printf("ARBITER_MONO_SEPARATED [%d][%d] kp%d - WROTE from xbar %d. hash/part/strm = (%d,%d,%d), input_idx=%d, allowed_idx=%d\\n",' + "\n")
+        codeArr.append('                    arb_idx, partition_idx,' + "\n")
+        codeArr.append('                    kp_idx,' + "\n")
+        codeArr.append('                    print_xbar_idx,' + "\n")
+        codeArr.append('                    arb_idx,' + "\n")
+        codeArr.append('                    partition_idx,' + "\n")
+        codeArr.append('                    xbar[print_xbar_idx].value.md.sidx.to_int(),' + "\n")
+        codeArr.append('                    xbar[print_xbar_idx].value.md.iidx.to_int(),' + "\n")
+        codeArr.append('                    allowed_idx.to_int()' + "\n")
+        codeArr.append('            );' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('    }' + "\n")
+        codeArr.append('}' + "\n")
+
+
+        return codeArr
+
+
+
+
+
+
+
+    def _generate_separated_monoarb_ratemon(self):
+        codeArr = []
+        if (self.config.num_stm >= 10):
+            errormsg = "{}: On Oct22 2024, we found that with v2022.1 and S>=10, Vitis will schedule the Ratemonitor with an II=101. Use S < 10.".format(__name__)
+            print(errormsg)
+            raise AssertionError(errormsg)
+
+
+        codeArr.append('/**************************************' + "\n")
+        codeArr.append(' * NOTE: THIS RATEMONITOR IMPLEMENTATION MIGHT BE SUBOPTIMAL/DEPRECATED.' + "\n")
+        codeArr.append(' * Kenny is writing this into the codegenerator around Nov2024.' + "\n")
+        codeArr.append(' * I DO NOT INTEND THIS FUNCTION TO BE ACTIVELY MAINTAINED.' + "\n")
+        codeArr.append(' * This is purely for an ablation study to analyze the frequency' + "\n")
+        codeArr.append(' * improvements we have made to the Arbiter.' + "\n")
+        codeArr.append(' */' + "\n")
+
+
+        codeArr.append('void bloom_arbiter_ratemonitor(' + "\n")
+        codeArr.append('    int arb_idx' + "\n")
+        codeArr.append('    ,int kp_idx' + "\n")
+        codeArr.append('    ,char ratemon_ID' + "\n")
+        codeArr.append('    ,tapa::istreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>       &arb_stream_in' + "\n")
+        codeArr.append('    ,tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>       &arb_stream_out' + "\n")
+        codeArr.append('' + "\n")
+
+        for i in range(0, self.config.num_partitions):
+            codeArr.append('    ,tapa::ostream<RATEMON_FEEDBACK_DTYPE>  &fdbk_stream_{}'.format(i) + "\n")
+        codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+
+        codeArr.append('    ,int NUM_LOADS_PER_STM' + "\n")
+        codeArr.append('){' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    int WRITE_STOP_COUNT = NUM_STM * NUM_LOADS_PER_STM;' + "\n")
+        codeArr.append('    int writes_per_partition[BV_NUM_PARTITIONS] = {};' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    typedef struct {' + "\n")
+        codeArr.append('        BIT_DTYPE           valid;' + "\n")
+        codeArr.append('        PACKED_HASH_DTYPE   value;' + "\n")
+        codeArr.append('    } XBAR_DTYPE;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    typedef enum {' + "\n")
+        codeArr.append('        WR_FEEDBACK,' + "\n")
+        codeArr.append('        WR_OUTPUT' + "\n")
+        codeArr.append('    } RATEMON_MODE;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    XBAR_DTYPE              xbar[BV_NUM_PARTITIONS];' + "\n")
+        codeArr.append('    #pragma HLS ARRAY_PARTITION variable=xbar dim=0 complete' + "\n")
+        codeArr.append('    INPUT_IDX_DTYPE         min_output_idx[NUM_STM];' + "\n")
+        codeArr.append('    #pragma HLS ARRAY_PARTITION variable=min_output_idx dim=0 complete' + "\n")
+        codeArr.append('    BIT_DTYPE               idx_tracker[NUM_STM][ARB_RLDIST_NEXT_POW_TWO];' + "\n")
+        codeArr.append('    #pragma HLS ARRAY_PARTITION variable=idx_tracker dim=0 complete' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    INIT_LOOP:' + "\n")
+        codeArr.append('    for (int i = 0; i < BV_NUM_PARTITIONS; ++i) {' + "\n")
+        codeArr.append('        xbar[i].valid = 0;' + "\n")
+        codeArr.append('        writes_per_partition[i] = 0;' + "\n")
+        codeArr.append('    }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    INIT_LOOP_2:' + "\n")
+        codeArr.append('    for (int i = 0; i < NUM_STM; ++i) {' + "\n")
+        codeArr.append('        min_output_idx[i] = 0;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        for (int j = 0; j < ARB_RLDIST_NEXT_POW_TWO; ++j) {' + "\n")
+        codeArr.append('            idx_tracker[i][j] = 0;' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('    }' + "\n")
+        codeArr.append('' + "\n")
+
+
+        codeArr.append('    bool finished_computing = 0;' + "\n")
+        codeArr.append('    int finishcheck_partition_tracker = 0;' + "\n")
+        codeArr.append('    int finishcheck_num_writes_counter = 0;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    MAIN_LOOP:' + "\n")
+        codeArr.append('    while (finished_computing == 0) {' + "\n")
+        codeArr.append('    #pragma HLS PIPELINE II=1' + "\n")
+        codeArr.append('        RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        //// FINISHING LOGIC' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        FINISH_COMPUTATION_LOGIC:' + "\n")
+        codeArr.append('        if (finishcheck_partition_tracker < BV_NUM_PARTITIONS)' + "\n")
+        codeArr.append('        {' + "\n")
+        codeArr.append('            finishcheck_num_writes_counter += writes_per_partition[finishcheck_partition_tracker];' + "\n")
+        codeArr.append('            finishcheck_partition_tracker++;' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        else if (finishcheck_partition_tracker == BV_NUM_PARTITIONS &&' + "\n")
+        codeArr.append('            finishcheck_num_writes_counter == WRITE_STOP_COUNT' + "\n")
+        codeArr.append('        ) {' + "\n")
+        codeArr.append('            finished_computing = 1;' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('        else if (finishcheck_partition_tracker == BV_NUM_PARTITIONS)' + "\n")
+        codeArr.append('        {' + "\n")
+        codeArr.append('            finishcheck_partition_tracker = 0;' + "\n")
+        codeArr.append('            finishcheck_num_writes_counter = 0;' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+
+
+
+
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('        //// READ LOGIC' + "\n")
+        codeArr.append('        ////////////////////////' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        RD_INPUTS:' + "\n")
+        codeArr.append('        for (int partition_idx = 0; partition_idx < BV_NUM_PARTITIONS; ++partition_idx) {' + "\n")
+        codeArr.append('            INPUT_IDX_DTYPE     cur_input_idx;' + "\n")
+        codeArr.append('            STRM_IDX_DTYPE      cur_strm_idx;' + "\n")
+        codeArr.append('            METADATA_DTYPE      cur_metadata;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('            if (xbar[partition_idx].valid == 0 &&' + "\n")
+        codeArr.append('                !arb_stream_in[partition_idx].empty()' + "\n")
+        codeArr.append('            ){' + "\n")
+        codeArr.append('                xbar[partition_idx].valid = 1;' + "\n")
+        codeArr.append('                xbar[partition_idx].value = arb_stream_in[partition_idx].read();' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('                #ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('                printf("ARBITER RATEMON %d %c kp%d - Read from     h/p/s=(%d,%d,%d), input_idx=%d\\n",' + "\n")
+        codeArr.append('                        arb_idx,' + "\n")
+        codeArr.append('                        ratemon_ID,' + "\n")
+        codeArr.append('                        kp_idx,' + "\n")
+        codeArr.append('                        arb_idx,' + "\n")
+        codeArr.append('                        partition_idx,' + "\n")
+        codeArr.append('                        xbar[partition_idx].value.md.sidx.to_int(),' + "\n")
+        codeArr.append('                        xbar[partition_idx].value.md.iidx.to_int()' + "\n")
+        codeArr.append('                );' + "\n")
+        codeArr.append('                #endif' + "\n")
+        codeArr.append('            }' + "\n")
+        codeArr.append('        }' + "\n")
+        codeArr.append('' + "\n")
+
+
+        codeArr.append('        ///////////////////////' + "\n")
+        codeArr.append('        // WR_OUTPUTS:' + "\n")
+        codeArr.append('        ///////////////////////' + "\n")
+        codeArr.append('' + "\n")
+
+        print(" {}: using FAST HLS Mode for vivado version < 2022.1, which should be good".format(__name__))
+        codeArr.append('        #define RATEMON_WR_OUTPUT_FOR_PART_STM(PART, STM)   \\' + "\n")
+        codeArr.append('            if (xbar[PART].valid &&     \\' + "\n")
+        codeArr.append('                xbar[PART].value.md.sidx == STM &&  \\' + "\n")
+        codeArr.append('                !arb_stream_out[PART].full()    \\' + "\n")
+        codeArr.append('            )   \\' + "\n")
+        codeArr.append('            {   \\' + "\n")
+        codeArr.append('                int offset = (xbar[PART].value.md.iidx) % ARB_RLDIST_NEXT_POW_TWO;    \\' + "\n")
+        codeArr.append('                xbar[PART].valid = 0;   \\' + "\n")
+        codeArr.append('                arb_stream_out[PART].write(xbar[PART].value);   \\' + "\n")
+        codeArr.append('                idx_tracker[ STM ][offset] = 1;    \\' + "\n")
+        codeArr.append('                writes_per_partition[PART]++;   \\' + "\n")
+        codeArr.append('            }' + "\n")
+        codeArr.append('' + "\n")
+
+        codeArr.append('        #define RATEMON_WR_OUTPUT_FOR_PART(PART)    \\' + "\n")
+        for s in range(0, self.config.num_stm):
+            codeArr.append('            RATEMON_WR_OUTPUT_FOR_PART_STM(PART, {s}) \\'.format(s=s) + "\n")
+
+        codeArr.append('        ' + "\n")
+
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('        RATEMON_WR_OUTPUT_FOR_PART({p})'.format(p=p) + "\n")
+
+        codeArr.append('            #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('            crash!' + "\n")
+        codeArr.append('            #endif' + "\n")
+
+
+
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('        ///////////////////////' + "\n")
+        codeArr.append('        // UPDATE_IDCES:' + "\n")
+        codeArr.append('        ///////////////////////' + "\n")
+        codeArr.append('        #define RATEMON_UPDATE_IDX_FOR_STM(STM)     \\' + "\n")
+        codeArr.append('            int shuf_idx##STM = (min_output_idx[STM] + 1) % ARB_RLDIST_NEXT_POW_TWO;   \\' + "\n")
+        codeArr.append('            if (idx_tracker[STM][shuf_idx##STM] == 1) {  \\' + "\n")
+        codeArr.append('                min_output_idx[STM] += 1;   \\' + "\n")
+        codeArr.append('                idx_tracker[STM][shuf_idx##STM] = 0;     \\' + "\n")
+        codeArr.append('            }   \\' + "\n")
+        codeArr.append('                //#ifdef __DO_DEBUG_PRINTS__    \\' + "\n")
+        codeArr.append('                //printf("ARBITER RATEMON %d %c kp%d - Updating min_output_idx[%d]=%d\\n",   \\' + "\n")
+        codeArr.append('                //        arb_idx,  \\' + "\n")
+        codeArr.append('                //        ratemon_ID,   \\' + "\n")
+        codeArr.append('                //        kp_idx,   \\' + "\n")
+        codeArr.append('                //        STM,  \\' + "\n")
+        codeArr.append('                //        min_output_idx[STM].to_int()  \\' + "\n")
+        codeArr.append('                //);    \\' + "\n")
+        codeArr.append('                //#endif    \\' + "\n")
+        codeArr.append('' + "\n")
+
+        for s in range(0, self.config.num_stm):
+            codeArr.append('        RATEMON_UPDATE_IDX_FOR_STM({s})'.format(s=s) + "\n")
+
+
+        codeArr.append('' + "\n")
+        codeArr.append('        WRITE_FEEDBACK:' + "\n")
+
+        for i in range(0, self.config.num_stm):
+            codeArr.append('        feedback.strm{i}_out_idx = min_output_idx[{i}];'.format(i=i) + "\n")
+        codeArr.append('        #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
+        codeArr.append('        crash!' + "\n")
+        codeArr.append('        #endif' + "\n")
+        codeArr.append('' + "\n")
+
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('        fdbk_stream_{p}.try_write(feedback);'.format(p=p) + "\n")
+        codeArr.append('        #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('        crash!' + "\n")
+        codeArr.append('        #endif' + "\n")
+
+        codeArr.append('    }' + "\n")
+        codeArr.append('' + "\n")
+
+
+        codeArr.append('    EXITING_LOGIC:' + "\n")
+        codeArr.append('    /* For the next kernel call, we need to reset the ratemonitoring ' + "\n")
+        codeArr.append('        information. Otherwise, initially the atoms will not ratelimit.' + "\n")
+        codeArr.append('        (You can alternatively think of this as resetting the atoms)' + "\n")
+        codeArr.append('    */' + "\n")
+        codeArr.append('    RATEMON_FEEDBACK_DTYPE  feedback;' + "\n")
+        for i in range(0, self.config.num_stm):
+            codeArr.append('    feedback.strm{i}_out_idx = 0;'.format(i=i) + "\n")
+        codeArr.append('    #if NUM_STM != {}'.format(self.config.num_stm) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('    fdbk_stream_{p}.write(feedback);'.format(p=p) + "\n")
+        codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+
+        codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
+        codeArr.append('    printf("ARBITER RATEMON %d %c - DONE NOW!\\n", arb_idx, ratemon_ID);' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('}' + "\n")
+        codeArr.append("\n\n\n")
+
+        return codeArr
+
+
+
+
+
+
+
+    def _generate_separated_monoarb_single_arbiter(self):
+        codeArr = []
+
+        codeArr.append('/**************************************' + "\n")
+        codeArr.append(' * NOTE: THIS IMPLEMENTATION MIGHT BE SUBOPTIMAL/DEPRECATED.' + "\n")
+        codeArr.append(' * Kenny is writing this into the codegenerator around Nov2024.' + "\n")
+        codeArr.append(' * I DO NOT INTEND THIS FUNCTION TO BE ACTIVELY MAINTAINED.' + "\n")
+        codeArr.append(' * This is purely for an ablation study to analyze the frequency' + "\n")
+        codeArr.append(' * improvements we have made to the Arbiter.' + "\n")
+        codeArr.append(' */' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('void bloom_single_arbiter(' + "\n")
+        codeArr.append('        int arb_idx' + "\n")
+        codeArr.append('        , int kp_idx' + "\n")
+        codeArr.append('        , tapa::istreams<PACKED_HASH_DTYPE, NUM_STM*BV_NUM_PARTITIONS>  &in_arb_streams' + "\n")
+        codeArr.append('        , tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>          &bv_lookup_stream' + "\n")
+        codeArr.append('        , int NUM_LOADS_PER_STM' + "\n")
+        codeArr.append(') {' + "\n")
+        codeArr.append('    tapa::streams<PACKED_HASH_DTYPE,    BV_NUM_PARTITIONS>      monoarb_to_ratemon_stream;' + "\n")
+        codeArr.append('' + "\n")
+
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('    tapa::stream<RATEMON_FEEDBACK_DTYPE>        ratemon_fdbk_streams_p{p};'.format(p=p) + "\n")
+        codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('    tapa::task()' + "\n")
+
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('        .invoke<tapa::detach>(' + "\n")
+            codeArr.append('                bloom_separated_monoarb_per_hashpart' + "\n")
+            codeArr.append('                ,arb_idx' + "\n")
+            codeArr.append('                ,{p}'.format(p=p) + "\n")
+            codeArr.append('                ,kp_idx' + "\n")
+            for s in range(0, self.config.num_stm):
+                codeArr.append('                ,in_arb_streams[NUM_STM*{p} + {s}]'.format(p=p, s=s)  + "\n")
+            codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
+            codeArr.append('                ,monoarb_to_ratemon_stream[{p}]'.format(p=p) + "\n")
+            codeArr.append('        )' + "\n")
+        codeArr.append('    #if BV_NUM_PARTITIONS != {}'.format(self.config.num_partitions) + "\n")
+        codeArr.append('    crash!' + "\n")
+        codeArr.append('    #endif' + "\n")
+
+
+        codeArr.append('        .invoke(' + "\n")
+        codeArr.append('                bloom_arbiter_ratemonitor' + "\n")
+        codeArr.append('                ,arb_idx' + "\n")
+        codeArr.append('                ,kp_idx' + "\n")
+        codeArr.append('                ,\'a\'' + "\n")
+        codeArr.append('                ,monoarb_to_ratemon_stream' + "\n")
+        codeArr.append('                ,bv_lookup_stream' + "\n")
+        for p in range(0, self.config.num_partitions):
+            codeArr.append('                ,ratemon_fdbk_streams_p{p}'.format(p=p) + "\n")
+        codeArr.append('                ,NUM_LOADS_PER_STM' + "\n")
+        codeArr.append('        )' + "\n")
+        codeArr.append('    ;' + "\n")
+        codeArr.append('}' + "\n")
+        codeArr.append("\n\n\n")
+
+        return codeArr
+
+
+
+
+
+
+
+    def _generate_separated_monoarb_wrapper(self):
+        codeArr = []
+
+        codeArr.append('/**************************************' + "\n")
+        codeArr.append(' * NOTE: THIS IMPLEMENTATION MIGHT BE SUBOPTIMAL/DEPRECATED.' + "\n")
+        codeArr.append(' * Kenny is writing this into the codegenerator around Nov2024.' + "\n")
+        codeArr.append(' * I DO NOT INTEND THIS FUNCTION TO BE ACTIVELY MAINTAINED.' + "\n")
+        codeArr.append(' * This is purely for an ablation study to analyze the frequency' + "\n")
+        codeArr.append(' * improvements we have made to the Arbiter.' + "\n")
+        codeArr.append(' */' + "\n")
+        codeArr.append('' + "\n")
+
+
+
+
+
+
+
+    def generate_separated_monoarb_per_hash(self):
+        codeArr = []
+
+        codeArr.extend(self.generate_hier_arb_fwd())
+        codeArr.extend(self._generate_separated_monoarb_monoarb())
+        codeArr.extend(self._generate_separated_monoarb_ratemon())
+        codeArr.extend(self._generate_separated_monoarb_single_arbiter())
+        codeArr.extend(self.generate_hier_arb_wrapper())
+
+        return codeArr
+
+
+
 
 
 
@@ -1271,17 +1916,10 @@ class ArbCodeGenerator:
         codeArr.append('void bloom_monoarb_per_hash(' + "\n")
         codeArr.append('        int hash_idx' + "\n")
         codeArr.append('        , int kp_idx' + "\n")
-        codeArr.append('        , tapa::istreams<HASHONLY_DTYPE, NUM_STM>         & hash_stream' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        //#if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        //,tapa::ostreams<PERFCTR_DTYPE, NUM_ARBITER_ATOMS>   & perfctr_out_0' + "\n")
-        codeArr.append('        //,tapa::ostreams<PERFCTR_DTYPE, NUM_ARBITER_ATOMS>   & perfctr_out_1' + "\n")
-        codeArr.append('        //        #if NUM_HASH != 2' + "\n")
-        codeArr.append('        //        ,crash!' + "\n")
-        codeArr.append('        //        #endif' + "\n")
-        codeArr.append('        //#endif' + "\n")
+        codeArr.append('        , tapa::istreams<COMP2ARB_DTYPE, NUM_STM>         & comp2arb_stream' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('        , tapa::ostreams<PACKED_HASH_DTYPE, BV_NUM_PARTITIONS>   & bv_lookup_stream' + "\n")
+        codeArr.append('        ,int NUM_LOADS_PER_STM' + "\n")
         codeArr.append(') {' + "\n")
         codeArr.append('    typedef struct {' + "\n")
         codeArr.append('        ap_uint<1>          valid;' + "\n")
@@ -1289,8 +1927,14 @@ class ArbCodeGenerator:
         codeArr.append('        uint32_t            target_partition_idx;' + "\n")
         codeArr.append('    } XBAR_DTYPE;' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    const int READ_STOP_COUNT =     NUM_STM * KEYPAIRS_PER_STM;' + "\n")
-        codeArr.append('    const int WRITE_STOP_COUNT =    NUM_STM * KEYPAIRS_PER_STM;' + "\n")
+
+        #codeArr.append('CRASH_COMPILATION(;' + "\n")
+        #codeArr.append('After the (BLOOM-111) changes, we need some changes to support this.' + "\n")
+        #codeArr.append('    - The input, from Compute, needs to be a (pidx, lookupidx) pair, not just a hash.' + "\n")
+
+        codeArr.append('' + "\n")
+        codeArr.append('    const int READ_STOP_COUNT =     NUM_STM * NUM_LOADS_PER_STM;' + "\n")
+        codeArr.append('    const int WRITE_STOP_COUNT =    NUM_STM * NUM_LOADS_PER_STM;' + "\n")
         codeArr.append('    int total_num_reads = 0;' + "\n")
         codeArr.append('    int total_num_writes = 0;' + "\n")
         codeArr.append('' + "\n")
@@ -1321,17 +1965,6 @@ class ArbCodeGenerator:
         codeArr.append('    INPUT_IDX_DTYPE     allowed_output_idces = {};' + "\n")
         codeArr.append('    #pragma HLS ARRAY_PARTITION variable=allowed_output_idces dim=0 complete' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('    BIT_DTYPE       did_read;' + "\n")
-        codeArr.append('    BIT_DTYPE       did_write;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   stall_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   readonly_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   writeonly_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   readwrite_cycles = 0;' + "\n")
-        codeArr.append('    PERFCTR_DTYPE   total_cycles = 0;' + "\n")
-        codeArr.append('    #endif' + "\n")
-        codeArr.append('' + "\n")
         codeArr.append('    /* Keep track of the slowest input-streams for each hash function.' + "\n")
         codeArr.append('     * This is for dynamic arbitration. */' + "\n")
         codeArr.append('    STRM_IDX_DTYPE      slowest_stm_idces = {};' + "\n")
@@ -1339,7 +1972,7 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    #ifndef __SYNTHESIS__' + "\n")
-        codeArr.append('    printf("WARNING! WARNING! Using SPLIT monolithic (non-hier) arbiter!!!\\n");' + "\n")
+        codeArr.append('    printf("WARNING! WARNING! Using PER-HASH, monolithic (non-separated, non-hier) arbiter!!!\\n");' + "\n")
         codeArr.append('    #endif' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    /* For some reason, multiple calls to the kernel will fail' + "\n")
@@ -1373,11 +2006,6 @@ class ArbCodeGenerator:
         codeArr.append('    {' + "\n")
         codeArr.append('    #pragma HLS PIPELINE II = 1' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        did_read = 0;' + "\n")
-        codeArr.append('        did_write = 0;' + "\n")
-        codeArr.append('        #endif' + "\n")
-        codeArr.append('' + "\n")
         codeArr.append('        RD_STM_LOOP:' + "\n")
         codeArr.append('        for(int strm_idx = 0; strm_idx < NUM_STM; strm_idx++){' + "\n")
         codeArr.append('            ' + "\n")
@@ -1398,18 +2026,11 @@ class ArbCodeGenerator:
         codeArr.append('                //);' + "\n")
         codeArr.append('                #endif' + "\n")
         codeArr.append('            }' + "\n")
-        codeArr.append('            else if ( (!hash_stream[strm_idx].empty()) ) {' + "\n")
+        codeArr.append('            else if ( (!comp2arb_stream[strm_idx].empty()) ) {' + "\n")
         codeArr.append('                // Hash and partition data:' + "\n")
-        codeArr.append('                HASHONLY_DTYPE  tmp_hash;' + "\n")
+        codeArr.append('                COMP2ARB_DTYPE  tmp_hash;' + "\n")
         codeArr.append('                ' + "\n")
-        codeArr.append('                tmp_hash = hash_stream[strm_idx].read();' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('                #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('                did_read = 1;' + "\n")
-        codeArr.append('                #endif' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('                HASHONLY_DTYPE  idx_inside_partition = tmp_hash % BV_PARTITION_LENGTH;' + "\n")
-        codeArr.append('                int             partition_idx = (tmp_hash / BV_PARTITION_LENGTH);' + "\n")
+        codeArr.append('                tmp_hash = comp2arb_stream[strm_idx].read();' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                total_num_reads++;' + "\n")
         codeArr.append('                reads_per_input[strm_idx]++;' + "\n")
@@ -1423,11 +2044,11 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('                // Pack final payload' + "\n")
         codeArr.append('                packed_hashval.md = cur_metadata;' + "\n")
-        codeArr.append('                packed_hashval.hash = idx_inside_partition;' + "\n")
+        codeArr.append('                packed_hashval.hash = tmp_hash.lookup_idx;' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                xbar_output[strm_idx].valid = 1;' + "\n")
         codeArr.append('                xbar_output[strm_idx].value = packed_hashval;' + "\n")
-        codeArr.append('                xbar_output[strm_idx].target_partition_idx = partition_idx;' + "\n")
+        codeArr.append('                xbar_output[strm_idx].target_partition_idx = tmp_hash.partition_idx;' + "\n")
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('' + "\n")
@@ -1462,19 +2083,19 @@ class ArbCodeGenerator:
         codeArr.append('            bool                found = false;' + "\n")
         codeArr.append('            uint32_t            found_strm_idx = 0;' + "\n")
         codeArr.append('            PACKED_HASH_DTYPE   packed_hashval;' + "\n")
-        codeArr.append('            int                 allowed_idx = allowed_output_idces + (SHUFFLEBUF_SZ);' + "\n")
+        codeArr.append('            int                 allowed_idx = allowed_output_idces + (ARB_RATELIM_DISTANCE);' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('            WR_STM_LOOP0:' + "\n")
-        codeArr.append('            //for (int strm_idx = 0; ' + "\n")
-        codeArr.append('            //        strm_idx < NUM_STM;' + "\n")
-        codeArr.append('            //        strm_idx++' + "\n")
-        codeArr.append('            //)' + "\n")
-        codeArr.append('            // Prioritizing slowest stream. For some reason, this increases II' + "\n")
-        codeArr.append('            //  when using a larger config.' + "\n")
-        codeArr.append('            for (int strm_idx = (slowest_stm_idces+1)%NUM_STM, it_ctr = 0; ' + "\n")
-        codeArr.append('                    it_ctr < NUM_STM;' + "\n")
-        codeArr.append('                    strm_idx = (strm_idx+1)%NUM_STM, ++it_ctr' + "\n")
+        codeArr.append('            for (int strm_idx = 0; ' + "\n")
+        codeArr.append('                    strm_idx < NUM_STM;' + "\n")
+        codeArr.append('                    strm_idx++' + "\n")
         codeArr.append('            )' + "\n")
+        codeArr.append('            // // Prioritizing slowest stream. For some reason, this increases II' + "\n")
+        codeArr.append('            // //  when using a larger config.' + "\n")
+        codeArr.append('            // for (int strm_idx = (slowest_stm_idces+1)%NUM_STM, it_ctr = 0; ' + "\n")
+        codeArr.append('            //         it_ctr < NUM_STM;' + "\n")
+        codeArr.append('            //         strm_idx = (strm_idx+1)%NUM_STM, ++it_ctr' + "\n")
+        codeArr.append('            // )' + "\n")
         codeArr.append('            {' + "\n")
         codeArr.append('                /* Enforce a strict priority -' + "\n")
         codeArr.append('                 *  Each stream can only output indices' + "\n")
@@ -1539,10 +2160,6 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('                    xbar_output[found_strm_idx].valid = 0;' + "\n")
         codeArr.append('                    total_num_writes++;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('                    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('                    did_read = 1;' + "\n")
-        codeArr.append('                    #endif' + "\n")
         codeArr.append('                };' + "\n")
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
@@ -1561,81 +2178,7 @@ class ArbCodeGenerator:
         codeArr.append('            }' + "\n")
         codeArr.append('        }' + "\n")
         codeArr.append('        allowed_output_idces = min_idx;' + "\n")
-        codeArr.append('        ' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('        UPDATE_PERF_CTRS:' + "\n")
-        codeArr.append('        total_cycles++;' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('        if (did_write && !did_read){' + "\n")
-        codeArr.append('            writeonly_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (did_read && !did_write){' + "\n")
-        codeArr.append('            readonly_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (!did_read && !did_write){' + "\n")
-        codeArr.append('            stall_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        else if (did_read && did_write){' + "\n")
-        codeArr.append('            readwrite_cycles++;' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('        #endif' + "\n")
         codeArr.append('    }' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    #if ENABLE_PERF_CTRS' + "\n")
-        codeArr.append('    WRITE_PERF_CTRS:' + "\n")
-        codeArr.append('    for (int arb_atom_idx = 0; arb_atom_idx < NUM_ARBITER_ATOMS; ++arb_atom_idx)' + "\n")
-        codeArr.append('    {' + "\n")
-        codeArr.append('        for (int i = 0; i < NUM_PERFCTR_OUTPUTS; ++i) {' + "\n")
-        codeArr.append('        #pragma HLS PIPELINE II=1' + "\n")
-        codeArr.append('            if (i == 0){' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(stall_cycles);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(stall_cycles);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('            else if (i == 1){' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(readonly_cycles);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(readonly_cycles);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('            else if (i == 2){' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(writeonly_cycles);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(writeonly_cycles);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('            else if (i == 3){' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(readwrite_cycles);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(readwrite_cycles);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('            else if (i == 4){' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(total_cycles);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(total_cycles);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('            else{' + "\n")
-        codeArr.append('                perfctr_out_0[arb_atom_idx].write(55555);' + "\n")
-        codeArr.append('                perfctr_out_1[arb_atom_idx].write(55555);' + "\n")
-        codeArr.append('            }' + "\n")
-        codeArr.append('        }' + "\n")
-        codeArr.append('    }' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
-        codeArr.append('    printf("ARBITER_MONO kp%d h%d - stall_cycles         = %25lu\\n", ' + "\n")
-        codeArr.append('                kp_idx, hash_idx, stall_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER_MONO kp%d h%d - readonly_cycles      = %25lu\\n", ' + "\n")
-        codeArr.append('                kp_idx, hash_idx, readonly_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER_MONO kp%d h%d - writeonly_cycles     = %25lu\\n", ' + "\n")
-        codeArr.append('                kp_idx, hash_idx, writeonly_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER_MONO kp%d h%d - readwrite_cycles     = %25lu\\n", ' + "\n")
-        codeArr.append('                kp_idx, hash_idx, readwrite_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    printf("ARBITER_MONO kp%d h%d - total_cycles         = %25lu\\n", ' + "\n")
-        codeArr.append('                kp_idx, hash_idx, total_cycles' + "\n")
-        codeArr.append('    );' + "\n")
-        codeArr.append('    #endif' + "\n")
-        codeArr.append('' + "\n")
-        codeArr.append('    #endif  // ENABLE_PERF_CTRS' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    #ifdef __DO_DEBUG_PRINTS__' + "\n")
@@ -1646,6 +2189,10 @@ class ArbCodeGenerator:
         codeArr.append('' + "\n")
         codeArr.append('    return;' + "\n")
         codeArr.append('}' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
         return codeArr
 
 
@@ -1661,11 +2208,12 @@ class ArbCodeGenerator:
         codeArr.append('#define SPLIT_MONOARB_INVOKES_FOR_KP(KP_IDX)    \\' + "\n")
 
         for h in range(0, self.config.num_hash):
-            codeArr.append('        .invoke( bloom_monoarb_per_hash,        \\' + "\n")
-            codeArr.append('                    {},      \\'.format(h) + "\n")
-            codeArr.append('                    KP_IDX,     \\' + "\n")
-            codeArr.append('                    hash_stream_h{}_kp##KP_IDX,      \\'.format(h) + "\n")
-            codeArr.append('                    bv_lookup_stream_h{}_kp##KP_IDX  \\'.format(h) + "\n")
+            codeArr.append('        .invoke( bloom_monoarb_per_hash        \\' + "\n")
+            codeArr.append('                    ,{}      \\'.format(h) + "\n")
+            codeArr.append('                    ,KP_IDX     \\' + "\n")
+            codeArr.append('                    ,comp2arb_stream_h{}_kp##KP_IDX      \\'.format(h) + "\n")
+            codeArr.append('                    ,bv_lookup_stream_h{}_kp##KP_IDX  \\'.format(h) + "\n")
+            codeArr.append('                    ,NUM_LOADS_PER_STM  \\' + "\n")
             codeArr.append('        )       \\' + "\n")
 
         codeArr.append('' + "\n")
@@ -1698,7 +2246,7 @@ class ArbCodeGenerator:
         codeArr.append('void bloom_monolithic_arbiter(' + "\n")
         codeArr.append('        int kp_idx' + "\n")
         for i in range(0, self.config.num_hash):
-            codeArr.append('        , tapa::istreams<HASHONLY_DTYPE, NUM_STM>         & hash_stream_{}'.format(i) + "\n")
+            codeArr.append('        , tapa::istreams<LOOKUPIDX_DTYPE, NUM_STM>         & comp2arb_stream_{}'.format(i) + "\n")
         codeArr.append('        #if NUM_HASH != {}'.format(self.config.num_hash) + "\n")
         codeArr.append('        crash!' + "\n")
         codeArr.append('        #endif' + "\n")
@@ -1722,6 +2270,14 @@ class ArbCodeGenerator:
         codeArr.append('        PACKED_HASH_DTYPE   value;' + "\n")
         codeArr.append('        uint32_t            target_partition_idx;' + "\n")
         codeArr.append('    } XBAR_DTYPE;' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('CRASH_COMPILATION(;' + "\n")
+        codeArr.append('After the (BLOOM-111) changes, we need some changes to support this.' + "\n")
+        codeArr.append('    - The input, from Compute, needs to be a (pidx, lookupidx) pair, not just a hash.' + "\n")
+        codeArr.append('' + "\n")
+        codeArr.append('' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('    const int READ_STOP_COUNT =     NUM_STM * KEYPAIRS_PER_STM*NUM_HASH;' + "\n")
         codeArr.append('    const int WRITE_STOP_COUNT =    NUM_STM * KEYPAIRS_PER_STM*NUM_HASH;' + "\n")
@@ -1849,18 +2405,18 @@ class ArbCodeGenerator:
                 OR = " ||"
             else:
                 OR = ""
-            codeArr.append('                    ( hash_idx == {i1} && !hash_stream_{i2}[strm_idx].empty() ) {OR}'.format(i1=i, i2=i, OR=OR) + "\n")
+            codeArr.append('                    ( hash_idx == {i1} && !comp2arb_stream_{i2}[strm_idx].empty() ) {OR}'.format(i1=i, i2=i, OR=OR) + "\n")
         codeArr.append('                        #if NUM_HASH != {}'.format(self.config.num_hash) + "\n")
         codeArr.append('                        crash &&' + "\n")
         codeArr.append('                        #endif' + "\n")
 
         codeArr.append('                ) {' + "\n")
         codeArr.append('                    // Hash and partition data:' + "\n")
-        codeArr.append('                    HASHONLY_DTYPE  tmp_hash;' + "\n")
+        codeArr.append('                    LOOKUPIDX_DTYPE  tmp_hash;' + "\n")
         codeArr.append('                    ' + "\n")
 
         for i in range(0, self.config.num_hash):
-            codeArr.append('                    if (hash_idx == {i1}) {{ tmp_hash = hash_stream_{i2}[strm_idx].read(); }}'.format(i1=i, i2=i) + "\n")
+            codeArr.append('                    if (hash_idx == {i1}) {{ tmp_hash = comp2arb_stream_{i2}[strm_idx].read(); }}'.format(i1=i, i2=i) + "\n")
         codeArr.append('                    #if NUM_HASH != {}'.format(self.config.num_hash) + "\n")
         codeArr.append('                    crash!' + "\n")
         codeArr.append('                    #endif' + "\n")
@@ -1869,7 +2425,7 @@ class ArbCodeGenerator:
         codeArr.append('                    did_read = 1;' + "\n")
         codeArr.append('                    #endif' + "\n")
         codeArr.append('' + "\n")
-        codeArr.append('                    HASHONLY_DTYPE  idx_inside_partition = tmp_hash % BV_PARTITION_LENGTH;' + "\n")
+        codeArr.append('                    LOOKUPIDX_DTYPE  idx_inside_partition = tmp_hash % BV_PARTITION_LENGTH;' + "\n")
         codeArr.append('                    int             partition_idx = (tmp_hash / BV_PARTITION_LENGTH);' + "\n")
         codeArr.append('                    ' + "\n")
         codeArr.append('                    total_num_reads++;' + "\n")
@@ -1936,7 +2492,7 @@ class ArbCodeGenerator:
         codeArr.append('                bool                found = false;' + "\n")
         codeArr.append('                uint32_t            found_strm_idx = 0;' + "\n")
         codeArr.append('                PACKED_HASH_DTYPE   packed_hashval;' + "\n")
-        codeArr.append('                int                 allowed_idx = allowed_output_idces[hash_idx] + (SHUFFLEBUF_SZ);' + "\n")
+        codeArr.append('                int                 allowed_idx = allowed_output_idces[hash_idx] + (ARB_RATELIM_DISTANCE);' + "\n")
         codeArr.append('' + "\n")
         codeArr.append('                WR_STM_LOOP0:' + "\n")
 
@@ -2166,10 +2722,23 @@ class ArbCodeGenerator:
         codeArr = []
         codeArr.extend(self.generate_preamble())
 
-        if (self.config.arbiter_type == ArbiterType.HIERARCHICAL):
+        if (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH):
             codeArr.extend(self.generate_hier_arb())
 
-        elif (self.config.arbiter_type == ArbiterType.SPLIT_MONOLITHIC):
+        elif (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_NORATELIM):
+            print("WARNING: NOT USING RATELIMITING!")
+            print("WARNING: NOT USING RATELIMITING!")
+            codeArr.extend(self.generate_hier_arb())
+
+        elif (self.config.arbiter_type == ArbiterType.SEPARATED_HIERARB_PER_HASH_SINGLECYCLE_EXIT_CHECK):
+            print("WARNING: NOT USING MULTICYCLE EXIT-CHECK FREQUENCY OPTIMIZATIONS!")
+            print("WARNING: NOT USING MULTICYCLE EXIT-CHECK FREQUENCY OPTIMIZATIONS!")
+            codeArr.extend(self.generate_hier_arb())
+
+        elif (self.config.arbiter_type == ArbiterType.UNSEPARATED_MONOARB_PER_HASH):
+            print("WARNING: USING MONOLITHIC ARBITER PER HASH... this is not recommended.")
+            print("WARNING: USING MONOLITHIC ARBITER PER HASH... this is not recommended.")
+            print("WARNING: USING MONOLITHIC ARBITER PER HASH... this is not recommended.")
             codeArr.extend(self.generate_split_monolithic_arb())
 
         elif (self.config.arbiter_type == ArbiterType.SINGLE_MONOLITHIC):
@@ -2177,6 +2746,17 @@ class ArbCodeGenerator:
             print("WARNING: USING SINGLE MONOLITHIC ARBITER... this is not recommended.")
             print("WARNING: USING SINGLE MONOLITHIC ARBITER... this is not recommended.")
             codeArr.extend(self.generate_single_monolithic_arb())
+
+        elif (self.config.arbiter_type== ArbiterType.SEPARATED_MONOARB_PER_HASH):
+            print("WARNING: USING SEPARATED MONOLITHIC ARBITER PER HASH... this is not recommended.")
+            print("WARNING: USING SEPARATED MONOLITHIC ARBITER PER HASH... this is not recommended.")
+            print("WARNING: USING SEPARATED MONOLITHIC ARBITER PER HASH... this is not recommended.")
+            codeArr.extend(self.generate_separated_monoarb_per_hash())
+
+        else:
+            errmsg = "Unrecognized arbiter type."
+            print(erromsg)
+            raise AssertionError(errmsg)
 
         if (self.config.enable_arbiter_sink == 1):
             codeArr.extend(self.generate_debug_sink())

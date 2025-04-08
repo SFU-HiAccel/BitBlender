@@ -29,27 +29,27 @@ def get_freqs_and_resources():
                     freqs_and_resources[1] = int(line.split(":")[1].strip())
                 else:
                     freqs_and_resources[1] = '-'
-            elif ("LUT" in line):
+            elif ("Total LUT" in line):
                 if (FILENOTFOUND_RETVAL not in line):
                     freqs_and_resources[2] = float(line.split(":")[1].strip())/100
                 else:
                     freqs_and_resources[2] = '-'
-            elif ("FF" in line):
+            elif ("Total FF" in line):
                 if (FILENOTFOUND_RETVAL not in line):
                     freqs_and_resources[3] = float(line.split(":")[1].strip())/100
                 else:
                     freqs_and_resources[3] = '-'
-            elif ("BRAM" in line):
+            elif ("Total BRAM" in line):
                 if (FILENOTFOUND_RETVAL not in line):
                     freqs_and_resources[4] = float(line.split(":")[1].strip())/100
                 else:
                     freqs_and_resources[4] = '-'
-            elif ("URAM" in line):
+            elif ("Total URAM" in line):
                 if (FILENOTFOUND_RETVAL not in line):
                     freqs_and_resources[5] = float(line.split(":")[1].strip())/100
                 else:
                     freqs_and_resources[5] = '-'
-            elif ("DSP" in line):
+            elif ("Total DSP" in line):
                 if (FILENOTFOUND_RETVAL not in line):
                     freqs_and_resources[6] = float(line.split(":")[1].strip())/100
                 else:
@@ -121,6 +121,7 @@ def get_freq_debug_info():
     freq_debug_info = ['-'] * NUM_FREQDEBUG_INFO_ENTRIES
     DEVICE_NAMES = ["xilinx_u280_xdma_201920_3", "xilinx_u280_gen3x16_xdma_1_202211_1"]
     hw_rpt_dirs = ["vitis_run_hw/workload_{}.temp/reports/link/imp/".format(devname) for devname in DEVICE_NAMES]
+    hw_rpt_dirs.append("K_tmp_v++_dir/_x_aurora_hls_hw/reports/link/imp/")
     timing_rptname_subset = "bb_locked_timing_summary_postroute_physopted.rpt"
 
     num_autobridge_slots = _get_num_autobridge_slots()
@@ -245,7 +246,7 @@ def get_numqueries_and_fprates():
             retval.append(ninserts[i])
 
     except FileNotFoundError:
-        retval = ['-'] * 5
+        retval = ['-'] * 4
 
     return retval
 
@@ -253,69 +254,122 @@ def get_numqueries_and_fprates():
 
 def get_fpga_runtimes():
     runtimes = ['-'] * 4
+    runcycles = ['-'] * 4
     results_fname = "KENNY_run_hw.log"
     random_times = []
+    random_cycles = []
+    num_reported_perfctrs = 0
+    num_discovered_perfctrs = 0
+    cur_cycles = 0
+    prev_cycles = 0
 
     try:
         res_file = open(results_fname, 'r')
         data_lines = res_file.readlines()
-        idx = 0
+        input_mode = 0
 
         for line in data_lines:
             if ("gen_data_mode" in line):
                 MODE = line.split("INPUT_GEN_MODE_")[1]
                 if ("NO_CLASH" in MODE):
-                    idx = 0
+                    input_mode = 0
                 elif ("CYCLIC_CLASH" in MODE):
-                    idx = 1
+                    input_mode = 1
                 elif ("ALL_CLASH" in MODE):
-                    idx = 2
+                    input_mode = 2
                 elif ("RANDOM" in MODE):
-                    idx = 3
+                    input_mode = 3
                 else:
                     raise KeyError
 
-                #print(line)
-                #print(idx)
+                assert (num_discovered_perfctrs == num_reported_perfctrs)
+                num_discovered_perfctrs = 0
+                num_reported_perfctrs = 0
+
 
             if ("KERNEL time" in line):
                 time = line.split(":")[1]
                 time = time.split('s')[0]
                 time = time.strip()
-                if (idx == 3):
+                if (input_mode == 3):
                     random_times.append(float(time))
                 else:
-                    runtimes[idx] = time
+                    runtimes[input_mode] = time
+
+
+            if ("NUM_PERFCTR_MODULES" in line):
+                num_reported_perfctrs = line.split("=")[1].strip()
+                num_reported_perfctrs = int(num_reported_perfctrs)
+
+
+            if ("PERFORMANCE_COUNTER_VALUE" in line):
+                num_discovered_perfctrs += 1
+
+                cur_cycles = line.split("=")[1]
+                cur_cycles = cur_cycles.strip()
+                cur_cycles = int(cur_cycles)
+                ## ### Keep the MAXIMUM perfcounter value, for random-testcases.
+                ## cur_cycles = max(cur_cycles, prev_cycles)
+
+                if (num_discovered_perfctrs == num_reported_perfctrs):
+                    if (input_mode == 3):
+                        random_cycles.append(float(cur_cycles))
+                        prev_cycles = cur_cycles
+                    else:
+                        runcycles[input_mode] = cur_cycles
+                        prev_cycles = 0
 
             if ("FAILED" in line):
                 raise NameError
                 break
 
 
+    except AssertionError:
+        runtimes = ['assertionfailed'] * 4
+        runcycles = runtimes
     except FileNotFoundError:
         runtimes = ['-'] * 4
+        runcycles = runtimes
     except NameError:
         runtimes = ['failed verif'] * 4
+        runcycles = runtimes
     except KeyError:
-        runtimes = ['wtf'] * 4
+        runtimes = ['keyerror'] * 4
+        runcycles = runtimes
 
-    # Drop the fastest and slowest 'outliers'.
+    # Drop the largest and smallest 'outliers'.
     random_times.sort()
     random_times = random_times[1:-1]
-    # Average the remaining times.
+    random_cycles.sort()
+    random_cycles = random_cycles [1:-1]
+
+    # Average the remaining values.
     if (len(random_times) == 0):
-        random_runtime = '-'
+        average_random_runtime = '-'
     else:
-        random_runtime = sum(random_times) / float(len(random_times))
+        average_random_runtime = sum(random_times) / float(len(random_times))
 
-    runtimes[3] = random_runtime
+    if (len(random_cycles) == 0):
+        average_random_runcycles = '-'
+    else:
+        average_random_runcycles = sum(random_cycles) / float(len(random_cycles))
 
-    return runtimes 
+
+    runtimes[3] = average_random_runtime
+    runcycles[3] = average_random_runcycles
+
+    return runtimes, runcycles
+
+
+
+
+
 
 
 def collect_all_results():
     top_dir = os.getcwd()
     all_build_dirs = os.listdir(BUILDS_DIR)
+
     csv_file = open(ALL_RESULTS_CSV, 'w', newline="")
     csv_writer = csv.writer(csv_file)
 
@@ -328,14 +382,20 @@ def collect_all_results():
 
         this_result = []
 
-        htsbm = [int(num) for num in dirname.split('-')]
+        dirname_split_uscore = dirname.split('_')
+        test_num = dirname_split_uscore[1]
+        htsbm_str = dirname_split_uscore[0]
+
+        htsbm = [int(num) for num in htsbm_str.split('-')]
         this_result.extend(htsbm)
 
         this_result.extend(get_freqs_and_resources())
 
         this_result.extend(get_freq_debug_info())
 
-        this_result.extend(get_fpga_runtimes())
+        runtimes, runcycles = get_fpga_runtimes()
+        this_result.extend(runtimes)
+        this_result.extend(runcycles)
 
         this_result.extend(get_numqueries_and_fprates())
 
